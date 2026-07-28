@@ -105,7 +105,7 @@ jobs:
 
           cmake --build build --parallel
           test -x build/test/unit_tests
-    
+          
       - name: Run all unit tests and generate coverage
         shell: bash
         env:
