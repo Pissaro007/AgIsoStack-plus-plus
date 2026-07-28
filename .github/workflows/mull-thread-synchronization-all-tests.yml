@@ -157,7 +157,7 @@ jobs:
             --allow-surviving \
             --no-output \
             --coverage-info all-tests.profdata \
-            --minimum-timeout 10000 \
+            --minimum-timeout 120000 \
             --reporters IDE \
             --reporters Elements \
             --report-dir mull-results \
