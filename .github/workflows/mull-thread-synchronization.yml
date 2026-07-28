@@ -173,7 +173,6 @@ jobs:
 
           mull-runner-19 \
             --allow-surviving \
-            --include-not-covered \
             --minimum-timeout 10000 \
             --reporters IDE \
             --reporters Elements \
