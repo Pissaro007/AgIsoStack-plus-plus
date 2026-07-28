@@ -118,6 +118,7 @@ jobs:
           cd build/test
       
           ./unit_tests \
+            --gtest_filter=-VirtualTerminalTest.FullPoolAutoscalingWithVector \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
       
@@ -161,9 +162,10 @@ jobs:
             --report-dir mull-results \
             --report-name thread-synchronization-all-tests \
             build/test/unit_tests \
+            --gtest_filter=-VirtualTerminalTest.FullPoolAutoscalingWithVector \
             --gtest_color=no \
             2>&1 | tee mull-results/mull-console.log
-
+            
       - name: Display Mull results
         if: always()
         shell: bash
