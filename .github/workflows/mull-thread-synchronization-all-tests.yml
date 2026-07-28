@@ -112,25 +112,26 @@ jobs:
           LLVM_PROFILE_FILE: ${{ github.workspace }}/all-tests.profraw
         run: |
           set -euo pipefail
-
+      
           rm -f all-tests.profraw all-tests.profdata
-
-          build/test/unit_tests \
+      
+          cd build/test
+      
+          ./unit_tests \
             --gtest_color=no \
-            2>&1 | tee all-tests-baseline.log
-
+            2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
+      
+          cd "${GITHUB_WORKSPACE}"
+      
           test -s all-tests.profraw
-
+      
           llvm-profdata-19 merge \
             -sparse \
             all-tests.profraw \
             -o all-tests.profdata
-
+      
           test -s all-tests.profdata
-
-          echo "=== Coverage files ==="
-          ls -lh all-tests.profraw all-tests.profdata
-
+          
       - name: Generate readable coverage report
         shell: bash
         run: |
