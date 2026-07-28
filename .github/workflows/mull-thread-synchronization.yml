@@ -97,14 +97,14 @@ jobs:
           MULL_CONFIG: ${{ github.workspace }}/mull-thread-synchronization.yml
         run: |
           set -euo pipefail
-
+      
           cmake -S . -B build \
             -G Ninja \
             -DBUILD_TESTING=ON \
             -DCMAKE_BUILD_TYPE=Debug \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
-            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fpass-plugin=/usr/lib/mull-ir-frontend-19"
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19"
 
       - name: Compile GoogleTest executable
         shell: bash
@@ -113,6 +113,31 @@ jobs:
 
           cmake --build build --parallel
 
+      - name: Generate coverage data
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/core-test.profraw
+        run: |
+          set -euo pipefail
+      
+          rm -f core-test.profraw core-test.profdata
+      
+          build/test/unit_tests \
+            --gtest_filter=CoreTest.TestCreateAndDestroyPartners \
+            --gtest_color=no
+      
+          test -f core-test.profraw
+      
+          llvm-profdata-19 merge \
+            -sparse \
+            core-test.profraw \
+            -o core-test.profdata
+      
+          test -f core-test.profdata
+      
+          echo "Coverage data generated:"
+          ls -lh core-test.profraw core-test.profdata
+    
       - name: Verify GoogleTest executable
         shell: bash
         run: |
@@ -168,11 +193,12 @@ jobs:
           MULL_CONFIG: ${{ github.workspace }}/mull-thread-synchronization.yml
         run: |
           set -euo pipefail
-
+      
           mkdir -p mull-results
-
+      
           mull-runner-19 \
             --allow-surviving \
+            --coverage-info core-test.profdata \
             --minimum-timeout 10000 \
             --reporters IDE \
             --reporters Elements \
@@ -182,7 +208,7 @@ jobs:
             --gtest_filter=CoreTest.TestCreateAndDestroyPartners \
             --gtest_color=no \
             2>&1 | tee mull-results/mull-console.log
-
+            
       - name: Display generated reports
         if: always()
         shell: bash
