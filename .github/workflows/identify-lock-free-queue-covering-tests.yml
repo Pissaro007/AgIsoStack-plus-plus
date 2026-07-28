@@ -3,6 +3,12 @@ name: Identify Tests Covering Surviving LockFreeQueue Mutants
 on:
   workflow_dispatch:
 
+  push:
+    branches:
+      - quality/mull-mutation-testing-poc
+    paths:
+      - .github/workflows/identify-lock-free-queue-covering-tests.yml
+
 permissions:
   contents: read
 
