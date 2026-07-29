@@ -1,5 +1,7 @@
 name: Mull - CAN Message Frame - All Tests
 
+# Manual rerun after updating DataCorrectnessTest
+
 on:
   workflow_dispatch:
 
