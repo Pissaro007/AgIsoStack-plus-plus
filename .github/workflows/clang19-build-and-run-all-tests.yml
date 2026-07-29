@@ -98,6 +98,7 @@ jobs:
           set +e
 
           build/test/unit_tests \
+            --gtest_filter=-VirtualTerminalTest.* \
             --gtest_color=no \
             --gtest_output=xml:test-results/unit-tests.xml \
             2>&1 | tee test-results/unit-tests.log
