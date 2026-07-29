@@ -1,0 +1,126 @@
+name: Clang 19 - Build and Run All Tests
+
+on:
+  workflow_dispatch:
+
+  # Le workflow n'étant pas encore présent sur main, ce déclencheur permet
+  # de l'exécuter lorsque son propre fichier est créé ou modifié.
+  push:
+    branches:
+      - quality/mull-can-message-frame
+    paths:
+      - .github/workflows/clang19-build-and-run-all-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    name: Compile and run all unit tests with Clang 19
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-19 \
+            llvm-19 \
+            build-essential \
+            cmake \
+            ninja-build
+
+      - name: Display tool versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang-19 --version
+          clang++-19 --version
+          cmake --version
+          ninja --version
+
+      - name: Configure project with Clang 19
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+        run: |
+          set -euo pipefail
+
+          cmake \
+            -S . \
+            -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+
+      - name: Compile all targets
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build --parallel
+
+      - name: Verify unit test executable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -x build/test/unit_tests
+
+          echo "Unit test executable:"
+          ls -l build/test/unit_tests
+
+      - name: List GoogleTest tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          build/test/unit_tests \
+            --gtest_list_tests \
+            --gtest_color=no
+
+      - name: Run all unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p test-results
+
+          set +e
+
+          build/test/unit_tests \
+            --gtest_color=no \
+            --gtest_output=xml:test-results/unit-tests.xml \
+            2>&1 | tee test-results/unit-tests.log
+
+          test_status=${PIPESTATUS[0]}
+
+          set -e
+
+          if [ "${test_status}" -ne 0 ]; then
+            echo "One or more unit tests failed."
+            exit "${test_status}"
+          fi
+
+          echo "All unit tests passed."
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: clang19-all-unit-tests
+          path: |
+            test-results/unit-tests.log
+            test-results/unit-tests.xml
+            build/compile_commands.json
+          if-no-files-found: warn
+          retention-days: 30
