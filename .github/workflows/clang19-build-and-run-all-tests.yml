@@ -15,8 +15,8 @@ permissions:
   contents: read
 
 jobs:
-  build-and-test:
-    name: Compile and run all unit tests with Clang 19
+  thread-synchronization:
+    name: Mutation testing - thread_synchronization - all tests
     runs-on: ubuntu-24.04
 
     steps:
@@ -34,94 +34,160 @@ jobs:
             llvm-19 \
             build-essential \
             cmake \
-            ninja-build
+            ninja-build \
+            curl
 
-      - name: Display tool versions
+      - name: Install Mull for LLVM 19
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -1sLf \
+            "https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh" \
+            | sudo -E bash
+
+          sudo apt-get update
+          sudo apt-get install -y mull-19
+
+      - name: Verify tools
         shell: bash
         run: |
           set -euo pipefail
 
           clang-19 --version
-          clang++-19 --version
-          cmake --version
-          ninja --version
+          llvm-profdata-19 --version
+          llvm-cov-19 --version
+          mull-runner-19 --version
 
-      - name: Configure project with Clang 19
+          test -f /usr/lib/mull-ir-frontend-19
+
+      - name: Create Mull configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > mull-thread-synchronization.yml <<'EOF'
+          includePaths:
+            - ".*utility/include/isobus/utility/thread_synchronization\\.hpp$"
+          excludePaths:
+            - ".*googletest.*"
+            - ".*googlemock.*"
+            - ".*gtest.*"
+            - ".*gmock.*"
+          quiet: false
+          EOF
+
+          echo "=== Mull configuration ==="
+          cat mull-thread-synchronization.yml
+
+      - name: Configure tests for Mull and LLVM coverage
         shell: bash
         env:
           CC: clang-19
           CXX: clang++-19
+          MULL_CONFIG: ${{ github.workspace }}/mull-thread-synchronization.yml
         run: |
           set -euo pipefail
 
-          cmake \
-            -S . \
-            -B build \
+          cmake -S . -B build \
             -G Ninja \
             -DBUILD_TESTING=ON \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
 
-      - name: Compile all targets
+      - name: Compile unit tests
         shell: bash
         run: |
           set -euo pipefail
 
           cmake --build build --parallel
-
-      - name: Verify unit test executable
-        shell: bash
-        run: |
-          set -euo pipefail
-
           test -x build/test/unit_tests
-
-          echo "Unit test executable:"
-          ls -l build/test/unit_tests
-
-      - name: List GoogleTest tests
+          
+      - name: Run all unit tests and generate coverage
         shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/all-tests.profraw
         run: |
           set -euo pipefail
-
-          build/test/unit_tests \
-            --gtest_list_tests \
-            --gtest_color=no
-
-      - name: Run all unit tests
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p test-results
-
-          set +e
-
-          build/test/unit_tests \
+      
+          rm -f all-tests.profraw all-tests.profdata
+      
+          cd build/test
+      
+          ./unit_tests \
             --gtest_filter=-VirtualTerminalTest.* \
             --gtest_color=no \
-            --gtest_output=xml:test-results/unit-tests.xml \
-            2>&1 | tee test-results/unit-tests.log
+            2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
+      
+          cd "${GITHUB_WORKSPACE}"
+      
+          test -s all-tests.profraw
+      
+          llvm-profdata-19 merge \
+            -sparse \
+            all-tests.profraw \
+            -o all-tests.profdata
+      
+          test -s all-tests.profdata
+          
+      - name: Generate readable coverage report
+        shell: bash
+        run: |
+          set -euo pipefail
 
-          test_status=${PIPESTATUS[0]}
+          llvm-cov-19 show \
+            build/test/unit_tests \
+            -instr-profile=all-tests.profdata \
+            utility/include/isobus/utility/thread_synchronization.hpp \
+            | tee thread-synchronization-coverage.txt
 
-          set -e
+      - name: Run Mull with all unit tests
+        shell: bash
+        env:
+          MULL_CONFIG: ${{ github.workspace }}/mull-thread-synchronization.yml
+        run: |
+          set -euo pipefail
 
-          if [ "${test_status}" -ne 0 ]; then
-            echo "One or more unit tests failed."
-            exit "${test_status}"
-          fi
+          mkdir -p mull-results
 
-          echo "All unit tests passed."
+          mull-runner-19 \
+            --allow-surviving \
+            --no-output \
+            --timeout 120000 \
+            --coverage-info all-tests.profdata \
+            --reporters IDE \
+            --reporters Elements \
+            --report-dir mull-results \
+            --report-name thread-synchronization-all-tests \
+            build/test/unit_tests \
+            --gtest_filter=-VirtualTerminalTest.* \
+            --gtest_color=no \
+            2>&1 | tee mull-results/mull-console.log
+            
+      - name: Display Mull results
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Generated Mull files ==="
+          find mull-results -maxdepth 2 -type f -print 2>/dev/null || true
 
-      - name: Upload test results
+          echo
+          echo "=== Mull console output ==="
+          cat mull-results/mull-console.log 2>/dev/null || true
+
+      - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: clang19-all-unit-tests
+          name: mull-thread-synchronization-all-tests
           path: |
-            test-results/unit-tests.log
-            test-results/unit-tests.xml
-            build/compile_commands.json
+            mull-results/
+            mull-thread-synchronization.yml
+            all-tests-baseline.log
+            all-tests.profdata
+            thread-synchronization-coverage.txt
           if-no-files-found: warn
           retention-days: 30
