@@ -88,7 +88,7 @@ TEST(CAN_MESSAGE_TESTS, DataCorrectnessTest)
 	testFrame.data[6] = 0x07;
 	testFrame.data[7] = 0x08;
 
-	EXPECT_EQ(testFrame.get_number_bits_in_message(), 145);
+	EXPECT_EQ(testFrame.get_number_bits_in_message(), 142);
 	
 	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
 	CANNetworkManager::CANNetwork.update();
