@@ -1,0 +1,395 @@
+name: Identify Tests Covering Surviving CAN NAME Mutants
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - quality/mull-can-name
+    paths:
+      - .github/workflows/identify-can-name-covering-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  identify-tests:
+    name: Identify unit tests covering surviving can_NAME mutants
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-19 \
+            llvm-19 \
+            build-essential \
+            cmake \
+            ninja-build
+
+      - name: Configure tests with LLVM coverage
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS="-O0 -g -fprofile-instr-generate -fcoverage-mapping" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -fprofile-instr-generate -fcoverage-mapping" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Compile unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build --parallel
+          test -x build/test/unit_tests
+
+      - name: List selected unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd build/test
+
+          ./unit_tests \
+            --gtest_list_tests \
+            --gtest_color=no \
+            > "${GITHUB_WORKSPACE}/gtest-list.txt"
+
+          awk '
+            /^[^[:space:]]/ {
+              suite = $1
+              sub(/\.$/, "", suite)
+              next
+            }
+            /^[[:space:]]+/ {
+              test = $1
+              sub(/#.*/, "", test)
+              if (suite != "" && test != "") {
+                print suite "." test
+              }
+            }
+          ' "${GITHUB_WORKSPACE}/gtest-list.txt" \
+            > "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+          test -s "${GITHUB_WORKSPACE}/selected-tests.txt"
+          echo "Selected tests: $(wc -l < "${GITHUB_WORKSPACE}/selected-tests.txt")"
+
+      - name: Identify tests covering surviving mutants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_FILE="${GITHUB_WORKSPACE}/isobus/src/can_NAME.cpp"
+          RESULTS_DIR="${GITHUB_WORKSPACE}/per-test-coverage"
+          REPORT_FILE="${GITHUB_WORKSPACE}/tests-covering-can-name-mutants.txt"
+          FAILED_FILE="${GITHUB_WORKSPACE}/tests-not-analysed.txt"
+
+          test -f "${SOURCE_FILE}"
+          mkdir -p "${RESULTS_DIR}"
+
+          : > "${RESULTS_DIR}/line-42-tests.txt"
+          : > "${RESULTS_DIR}/line-57-tests.txt"
+          : > "${RESULTS_DIR}/line-72-tests.txt"
+          : > "${RESULTS_DIR}/line-98-tests.txt"
+          : > "${RESULTS_DIR}/line-113-tests.txt"
+          : > "${RESULTS_DIR}/line-128-tests.txt"
+          : > "${RESULTS_DIR}/line-143-tests.txt"
+          : > "${FAILED_FILE}"
+
+          cd build/test
+
+          index=0
+          while IFS= read -r test_name; do
+            index=$((index + 1))
+
+            profile_raw="${RESULTS_DIR}/test-${index}.profraw"
+            profile_data="${RESULTS_DIR}/test-${index}.profdata"
+            coverage_text="${RESULTS_DIR}/test-${index}.txt"
+
+            echo "[${index}] ${test_name}"
+
+            if ! LLVM_PROFILE_FILE="${profile_raw}" \
+              ./unit_tests \
+                --gtest_filter="${test_name}" \
+                --gtest_color=no \
+                > /dev/null 2>&1; then
+              echo "${test_name}" >> "${FAILED_FILE}"
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            if [ ! -s "${profile_raw}" ]; then
+              echo "${test_name}" >> "${FAILED_FILE}"
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            llvm-profdata-19 merge \
+              -sparse \
+              "${profile_raw}" \
+              -o "${profile_data}"
+
+            llvm-cov-19 show \
+              ./unit_tests \
+              -instr-profile="${profile_data}" \
+              "${SOURCE_FILE}" \
+              > "${coverage_text}"
+
+            if awk -F'|' '
+              {
+                line = $1
+                count = $2
+                gsub(/[[:space:]]/, "", line)
+                gsub(/[[:space:]]/, "", count)
+                if (line == "42" && count != "" && count != "0") {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${coverage_text}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/line-42-tests.txt"
+            fi
+
+            if awk -F'|' '
+              {
+                line = $1
+                count = $2
+                gsub(/[[:space:]]/, "", line)
+                gsub(/[[:space:]]/, "", count)
+                if (line == "57" && count != "" && count != "0") {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${coverage_text}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/line-57-tests.txt"
+            fi
+
+            if awk -F'|' '
+              {
+                line = $1
+                count = $2
+                gsub(/[[:space:]]/, "", line)
+                gsub(/[[:space:]]/, "", count)
+                if (line == "72" && count != "" && count != "0") {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${coverage_text}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/line-72-tests.txt"
+            fi
+
+            if awk -F'|' '
+              {
+                line = $1
+                count = $2
+                gsub(/[[:space:]]/, "", line)
+                gsub(/[[:space:]]/, "", count)
+                if (line == "98" && count != "" && count != "0") {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${coverage_text}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/line-98-tests.txt"
+            fi
+
+            if awk -F'|' '
+              {
+                line = $1
+                count = $2
+                gsub(/[[:space:]]/, "", line)
+                gsub(/[[:space:]]/, "", count)
+                if (line == "113" && count != "" && count != "0") {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${coverage_text}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/line-113-tests.txt"
+            fi
+
+            if awk -F'|' '
+              {
+                line = $1
+                count = $2
+                gsub(/[[:space:]]/, "", line)
+                gsub(/[[:space:]]/, "", count)
+                if (line == "128" && count != "" && count != "0") {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${coverage_text}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/line-128-tests.txt"
+            fi
+
+            if awk -F'|' '
+              {
+                line = $1
+                count = $2
+                gsub(/[[:space:]]/, "", line)
+                gsub(/[[:space:]]/, "", count)
+                if (line == "143" && count != "" && count != "0") {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${coverage_text}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/line-143-tests.txt"
+            fi
+
+            rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+          done < "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+          sort -u "${RESULTS_DIR}/line-42-tests.txt" \
+            -o "${RESULTS_DIR}/line-42-tests.txt"
+          sort -u "${RESULTS_DIR}/line-57-tests.txt" \
+            -o "${RESULTS_DIR}/line-57-tests.txt"
+          sort -u "${RESULTS_DIR}/line-72-tests.txt" \
+            -o "${RESULTS_DIR}/line-72-tests.txt"
+          sort -u "${RESULTS_DIR}/line-98-tests.txt" \
+            -o "${RESULTS_DIR}/line-98-tests.txt"
+          sort -u "${RESULTS_DIR}/line-113-tests.txt" \
+            -o "${RESULTS_DIR}/line-113-tests.txt"
+          sort -u "${RESULTS_DIR}/line-128-tests.txt" \
+            -o "${RESULTS_DIR}/line-128-tests.txt"
+          sort -u "${RESULTS_DIR}/line-143-tests.txt" \
+            -o "${RESULTS_DIR}/line-143-tests.txt"
+
+          {
+            echo "Surviving mutants in can_NAME.cpp"
+            echo
+            echo "Line 42 - Boundary value 0x07"
+            echo "Mutant 1: Replaced > with >= at column 13 [cxx_gt_to_ge]"
+            echo "Mutant 2: Replaced > with <= at column 13 [cxx_gt_to_le]"
+            echo
+            echo "Tests covering line 42:"
+            if [ -s "${RESULTS_DIR}/line-42-tests.txt" ]; then
+              cat "${RESULTS_DIR}/line-42-tests.txt"
+            else
+              echo "No individual test found"
+            fi
+            echo
+            echo "Line 57 - Boundary value 0x0F"
+            echo "Mutant 3: Replaced > with >= at column 13 [cxx_gt_to_ge]"
+            echo "Mutant 4: Replaced > with <= at column 13 [cxx_gt_to_le]"
+            echo
+            echo "Tests covering line 57:"
+            if [ -s "${RESULTS_DIR}/line-57-tests.txt" ]; then
+              cat "${RESULTS_DIR}/line-57-tests.txt"
+            else
+              echo "No individual test found"
+            fi
+            echo
+            echo "Line 72 - Boundary value 0x7F"
+            echo "Mutant 5: Replaced > with >= at column 13 [cxx_gt_to_ge]"
+            echo "Mutant 6: Replaced > with <= at column 13 [cxx_gt_to_le]"
+            echo
+            echo "Tests covering line 72:"
+            if [ -s "${RESULTS_DIR}/line-72-tests.txt" ]; then
+              cat "${RESULTS_DIR}/line-72-tests.txt"
+            else
+              echo "No individual test found"
+            fi
+            echo
+            echo "Line 98 - Boundary value 0x1F"
+            echo "Mutant 7: Replaced > with >= at column 13 [cxx_gt_to_ge]"
+            echo "Mutant 8: Replaced > with <= at column 13 [cxx_gt_to_le]"
+            echo
+            echo "Tests covering line 98:"
+            if [ -s "${RESULTS_DIR}/line-98-tests.txt" ]; then
+              cat "${RESULTS_DIR}/line-98-tests.txt"
+            else
+              echo "No individual test found"
+            fi
+            echo
+            echo "Line 113 - Boundary value 0x07"
+            echo "Mutant 9: Replaced > with >= at column 13 [cxx_gt_to_ge]"
+            echo "Mutant 10: Replaced > with <= at column 13 [cxx_gt_to_le]"
+            echo
+            echo "Tests covering line 113:"
+            if [ -s "${RESULTS_DIR}/line-113-tests.txt" ]; then
+              cat "${RESULTS_DIR}/line-113-tests.txt"
+            else
+              echo "No individual test found"
+            fi
+            echo
+            echo "Line 128 - Boundary value 0x07FF"
+            echo "Mutant 11: Replaced > with >= at column 13 [cxx_gt_to_ge]"
+            echo "Mutant 12: Replaced > with <= at column 13 [cxx_gt_to_le]"
+            echo
+            echo "Tests covering line 128:"
+            if [ -s "${RESULTS_DIR}/line-128-tests.txt" ]; then
+              cat "${RESULTS_DIR}/line-128-tests.txt"
+            else
+              echo "No individual test found"
+            fi
+            echo
+            echo "Line 143 - Boundary value 0x001FFFFF"
+            echo "Mutant 13: Replaced > with >= at column 13 [cxx_gt_to_ge]"
+            echo "Mutant 14: Replaced > with <= at column 13 [cxx_gt_to_le]"
+            echo
+            echo "Tests covering line 143:"
+            if [ -s "${RESULTS_DIR}/line-143-tests.txt" ]; then
+              cat "${RESULTS_DIR}/line-143-tests.txt"
+            else
+              echo "No individual test found"
+            fi
+            echo
+            echo "Tests not analysed successfully"
+            if [ -s "${FAILED_FILE}" ]; then
+              cat "${FAILED_FILE}"
+            else
+              echo "None"
+            fi
+          } | tee "${REPORT_FILE}"
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Tests covering surviving CAN NAME mutants"
+            echo
+            echo '```text'
+            cat tests-covering-can-name-mutants.txt 2>/dev/null || \
+              echo "The identification report was not generated."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload identification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: can-name-covering-tests
+          path: |
+            tests-covering-can-name-mutants.txt
+            tests-not-analysed.txt
+            selected-tests.txt
+            gtest-list.txt
+            per-test-coverage/line-42-tests.txt
+            per-test-coverage/line-57-tests.txt
+            per-test-coverage/line-72-tests.txt
+            per-test-coverage/line-98-tests.txt
+            per-test-coverage/line-113-tests.txt
+            per-test-coverage/line-128-tests.txt
+            per-test-coverage/line-143-tests.txt
+          if-no-files-found: warn
+          retention-days: 30
