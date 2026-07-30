@@ -1,7 +1,5 @@
 name: Mull - CAN Identifier - All Tests
 
-# Manual rerun 3 after updating DataCorrectnessTest
-
 on:
   workflow_dispatch:
 
@@ -152,20 +150,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          mkdir -p mull-results
+          mkdir -p "${GITHUB_WORKSPACE}/mull-results"
+
+          cd build/test
 
           mull-runner-19 \
             --allow-surviving \
             --debug \
             --timeout 120000 \
-            --coverage-info all-tests.profdata \
+            --coverage-info "${GITHUB_WORKSPACE}/all-tests.profdata" \
             --reporters IDE \
             --reporters Elements \
-            --report-dir mull-results \
+            --report-dir "${GITHUB_WORKSPACE}/mull-results" \
             --report-name can-identifier-all-tests \
-            build/test/unit_tests \
+            ./unit_tests
             --gtest_color=no \
-            2>&1 | tee mull-results/mull-console.log
+            2>&1 | tee "${GITHUB_WORKSPACE}/mull-results/mull-console.log"
             
       - name: Display Mull results
         if: always()
