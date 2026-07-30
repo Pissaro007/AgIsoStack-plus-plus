@@ -156,7 +156,7 @@ jobs:
 
           mull-runner-19 \
             --allow-surviving \
-            --no-output \
+            --debug \
             --timeout 120000 \
             --coverage-info all-tests.profdata \
             --reporters IDE \
