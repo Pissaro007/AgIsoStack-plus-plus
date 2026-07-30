@@ -94,7 +94,13 @@ TEST(CAN_MESSAGE_TESTS, DataCorrectnessTest)
 	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
 	CANNetworkManager::CANNetwork.update();
 	CANNetworkManager::CANNetwork.remove_global_parameter_group_number_callback(0xE100, callback, nullptr);
-	CANHardwareInterface::stop();
+
+	const CANMessage message(CANMessage::Type::Receive, CANIdentifier(testFrame.identifier), testFrame.data, testFrame.dataLength, nullptr, nullptr, 0, testFrame.timestamp_us);
+	
+	EXPECT_EQ(1, message.get_data_custom_length(7, 1, CANMessage::ByteFormat::LittleEndian));
+	EXPECT_EQ(0x01, message.get_data_custom_length(7, 8, CANMessage::ByteFormat::LittleEndian));
+	
+	CANHardwareInterface::stop();	
 }
 
 TEST(CAN_MESSAGE_TESTS, DefaultTimestampIsZero)
