@@ -16,4 +16,7 @@ TEST(IDENTIFIER_TESTS, RawIdentifierConstuction)
 	EXPECT_EQ(0xEF00, testID.get_parameter_group_number());
 	EXPECT_EQ(0x1C, testID.get_destination_address());
 	EXPECT_EQ(0x80, testID.get_source_address());
+
+	CANIdentifier boundaryID(0x7FF);
+	EXPECT_EQ(CANIdentifier::Type::Standard, boundaryID.get_identifier_type());	
 }
