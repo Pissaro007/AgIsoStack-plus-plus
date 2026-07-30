@@ -2,6 +2,7 @@
 
 #include "isobus/isobus/can_NAME_filter.hpp"
 #include "isobus/isobus/can_constants.hpp"
+#include "isobus/isobus/can_stack_logger.hpp"
 
 #include <chrono>
 #include <thread>
@@ -35,22 +36,65 @@ TEST(CAN_NAME_TESTS, NAMEProperties)
 
 TEST(CAN_NAME_TESTS, NAMEPropertiesOutOfRange)
 {
-	NAME TestDeviceNAME;
-	TestDeviceNAME.set_industry_group(8);
-	TestDeviceNAME.set_device_class_instance(16);
-	TestDeviceNAME.set_device_class(128);
-	TestDeviceNAME.set_identity_number(2097152);
-	TestDeviceNAME.set_ecu_instance(8);
-	TestDeviceNAME.set_function_instance(32);
-	TestDeviceNAME.set_manufacturer_code(2048);
+	class TestLogger : public CANStackLogger
+	{
+	public:
+		void sink_CAN_stack_log(
+		  CANStackLogger::LoggingLevel level,
+		  const std::string &) override
+		{
+			if (CANStackLogger::LoggingLevel::Error == level)
+			{
+				errorCount++;
+			}
+		}
 
-	EXPECT_NE(TestDeviceNAME.get_industry_group(), 8);
-	EXPECT_NE(TestDeviceNAME.get_device_class_instance(), 16);
-	EXPECT_NE(TestDeviceNAME.get_device_class(), 128);
-	EXPECT_NE(TestDeviceNAME.get_identity_number(), 2097151);
-	EXPECT_NE(TestDeviceNAME.get_ecu_instance(), 8);
-	EXPECT_NE(TestDeviceNAME.get_function_instance(), 32);
-	EXPECT_NE(TestDeviceNAME.get_manufacturer_code(), 2048);
+		std::size_t get_error_count() const
+		{
+			return errorCount;
+		}
+
+	private:
+		std::size_t errorCount = 0;
+	};
+
+	TestLogger logger;
+	CANStackLogger::set_can_stack_logger_sink(&logger);
+
+	NAME TestDeviceNAME;
+
+	// Maximum valid values must not produce an error.
+	TestDeviceNAME.set_industry_group(0x07);
+	TestDeviceNAME.set_device_class_instance(0x0F);
+	TestDeviceNAME.set_device_class(0x7F);
+	TestDeviceNAME.set_function_instance(0x1F);
+	TestDeviceNAME.set_ecu_instance(0x07);
+	TestDeviceNAME.set_manufacturer_code(0x07FF);
+	TestDeviceNAME.set_identity_number(0x001FFFFF);
+
+	EXPECT_EQ(0, logger.get_error_count());
+
+	// Values immediately above the maximum must produce one error each.
+	TestDeviceNAME.set_industry_group(0x08);
+	TestDeviceNAME.set_device_class_instance(0x10);
+	TestDeviceNAME.set_device_class(0x80);
+	TestDeviceNAME.set_function_instance(0x20);
+	TestDeviceNAME.set_ecu_instance(0x08);
+	TestDeviceNAME.set_manufacturer_code(0x0800);
+	TestDeviceNAME.set_identity_number(0x00200000);
+
+	EXPECT_EQ(7, logger.get_error_count());
+
+	// Keep the functional checks from the existing test.
+	EXPECT_NE(TestDeviceNAME.get_industry_group(), 0x08);
+	EXPECT_NE(TestDeviceNAME.get_device_class_instance(), 0x10);
+	EXPECT_NE(TestDeviceNAME.get_device_class(), 0x80);
+	EXPECT_NE(TestDeviceNAME.get_function_instance(), 0x20);
+	EXPECT_NE(TestDeviceNAME.get_ecu_instance(), 0x08);
+	EXPECT_NE(TestDeviceNAME.get_manufacturer_code(), 0x0800);
+	EXPECT_NE(TestDeviceNAME.get_identity_number(), 0x00200000);
+
+	CANStackLogger::set_can_stack_logger_sink(nullptr);
 }
 
 TEST(CAN_NAME_TESTS, NAMEEquals)
