@@ -26,6 +26,8 @@ TEST(HARDWARE_INTERFACE_TESTS, SendMessageToHardware)
 	fakeFrame.data[0] = 0x01;
 	fakeFrame.channel = 0;
 
+	EXPECT_EQ(fakeFrame.get_number_bits_in_message(), 59);
+
 	CANMessageFrame receiveFrame;
 	memset(&receiveFrame, 0, sizeof(CANMessageFrame));
 	auto future = std::async(std::launch::async, [&] { receiver->read_frame(receiveFrame); });
