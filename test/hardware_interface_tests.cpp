@@ -26,6 +26,8 @@ TEST(HARDWARE_INTERFACE_TESTS, SendMessageToHardware)
 	fakeFrame.data[0] = 0x01;
 	fakeFrame.channel = 0;
 
+	EXPECT_EQ(fakeFrame.get_number_bits_in_message(), 59);
+
 	CANMessageFrame receiveFrame;
 	memset(&receiveFrame, 0, sizeof(CANMessageFrame));
 	auto future = std::async(std::launch::async, [&] { receiver->read_frame(receiveFrame); });
@@ -45,23 +47,23 @@ TEST(HARDWARE_INTERFACE_TESTS, SendMessageToHardware)
 TEST(HARDWARE_INTERFACE_TESTS, ReceiveMessageFromHardware)
 {
 	LockFreeQueue<CANMessageFrame> queue(3);
-	
-	CANMessageFrame queueFrame {};
+
+	CANMessageFrame queueFrame{};
 	queueFrame.identifier = 0x612;
 	queueFrame.isExtendedFrame = false;
 	queueFrame.dataLength = 1;
 	queueFrame.data[0] = 0x00;
 	queueFrame.channel = 0;
-	
+
 	ASSERT_TRUE(queue.push(queueFrame));
-	
-	CANMessageFrame queuedFrame {};
+
+	CANMessageFrame queuedFrame{};
 	ASSERT_TRUE(queue.peek(queuedFrame));
 	EXPECT_EQ(queuedFrame.identifier, 0x612);
-	
+
 	ASSERT_TRUE(queue.pop());
 	EXPECT_FALSE(queue.peek(queuedFrame));
-	
+
 	auto device = std::make_shared<VirtualCANPlugin>();
 	CANHardwareInterface::set_number_of_can_channels(1);
 	CANHardwareInterface::assign_can_channel_frame_handler(0, device);
