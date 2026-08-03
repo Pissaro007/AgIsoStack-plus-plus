@@ -1,0 +1,290 @@
+name: Identify Timeout Tests - CAN CONTROL FUNCTION
+
+on:
+  workflow_dispatch:
+
+  # Le workflow n'étant pas encore présent sur main, ce déclencheur permet
+  # de l'exécuter lorsque son propre fichier est créé ou modifié.
+  push:
+    branches:
+      - quality/mull-can-control-function
+    paths:
+      - .github/workflows/identify-can-control-function-timeout-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  can-control-function:
+    name: Identify tests timing out on line 34 mutants
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-19 \
+            llvm-19 \
+            build-essential \
+            cmake \
+            ninja-build \
+            curl
+
+      - name: Install Mull for LLVM 19
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl -1sLf \
+            "https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh" \
+            | sudo -E bash
+
+          sudo apt-get update
+          sudo apt-get install -y mull-19
+
+      - name: Verify tools
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang-19 --version
+          llvm-profdata-19 --version
+          llvm-cov-19 --version
+          mull-runner-19 --version
+
+          test -f /usr/lib/mull-ir-frontend-19
+
+      - name: Create Mull configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > mull-can-control-function.yml <<'EOF'
+          includePaths:
+            - ".*isobus/src/can_control_function\\.cpp$"
+          excludePaths:
+            - ".*googletest.*"
+            - ".*googlemock.*"
+            - ".*gtest.*"
+            - ".*gmock.*"
+          quiet: false
+          EOF
+
+          echo "=== Mull configuration ==="
+          cat mull-can-control-function.yml
+
+      - name: Configure tests for Mull and LLVM coverage
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+          MULL_CONFIG: ${{ github.workspace }}/mull-can-control-function.yml
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Compile unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build --parallel
+          test -x build/test/unit_tests
+          
+      - name: Run all unit tests and generate coverage
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/all-tests.profraw
+        run: |
+          set -euo pipefail
+      
+          rm -f all-tests.profraw all-tests.profdata
+      
+          cd build/test
+      
+          ./unit_tests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
+      
+          cd "${GITHUB_WORKSPACE}"
+      
+          test -s all-tests.profraw
+      
+          llvm-profdata-19 merge \
+            -sparse \
+            all-tests.profraw \
+            -o all-tests.profdata
+      
+          test -s all-tests.profdata
+          
+      - name: Generate readable coverage report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          llvm-cov-19 show \
+            build/test/unit_tests \
+            -instr-profile=all-tests.profdata \
+            isobus/src/can_control_function.cpp \
+            | tee can-control-function-coverage.txt
+
+      - name: Run each covering test against the line 34 mutants
+        shell: bash
+        env:
+          MULL_CONFIG: ${{ github.workspace }}/mull-can-control-function.yml
+        run: |
+          set -euo pipefail
+
+          RESULTS_DIR="${GITHUB_WORKSPACE}/mull-timeout-results"
+          mkdir -p "${RESULTS_DIR}/logs"
+
+          cat > "${RESULTS_DIR}/covering-tests.txt" <<'EOF'
+          AddressClaimTest.AddressClaim_PartneredClaim
+          AddressClaimTest.CannotClaim
+          AddressClaimTest.PreferredAddressContention
+          CAN_MESSAGE_TESTS.DataCorrectnessTest
+          ControlFunctionFunctionalitiesTest.CFFunctionalitiesTest
+          CoreTest.CommandedAddress
+          CoreTest.ControlFunctionAddressChangeTriggersStateCallback
+          CoreTest.InvalidatingControlFunctions
+          CoreTest.PartnerCreatedAfterExternalClaimHasValidAddress
+          CoreTest.SimilarControlFunctions
+          DiagnosticProtocolTest.MessageEncoding
+          GuidanceTest.GuidanceMessages
+          GuidanceTest.ListenOnlyModeAndDecoding
+          HeartbeatTest.HeartBeat
+          IsobusShortcutButtonTest.ShortcutButtonRxTests
+          IsobusShortcutButtonTest.ShortcutButtonTxTests
+          LanguageCommandInterfaceTest.SettersAndTransmitting
+          LanguageCommandInterfaceTest.ValidPartner
+          MaintainPowerTest.MessageEncoding
+          MaintainPowerTest.MessageParsing
+          NMEA2000Test.NMEA2KInterface
+          SpeedMessageTest.ListenOnlyModeAndDecoding
+          SpeedMessageTest.SpeedMessages
+          TaskControllerClientTest.CallbackTests
+          TaskControllerClientTest.DefaultProcessDataTest
+          TaskControllerClientTest.LanguageCommandFallback
+          TaskControllerClientTest.MessageEncoding
+          TaskControllerClientTest.StateMachineTests
+          TaskControllerClientTest.TimeoutTests
+          TaskControllerServerTest.B6CommandBusyStateTracking
+          TaskControllerServerTest.B6CommandBusyState_ObjectPoolActivateDeactivate
+          TaskControllerServerTest.B6CommandBusyState_ObjectPoolTransfer
+          TaskControllerServerTest.ClientVersionTracking
+          TaskControllerServerTest.MessageEncoding
+          TimeDateTest.ReceivesDaySPN962WithQuarterDayScaling
+          TimeDateTest.ReceivingMessages
+          TimeDateTest.SendsDaySPN962WithQuarterDayScaling
+          TimeDateTest.TransmitMessages
+          TransportProtocolTest.BroadcastConcurrentMessaging
+          TransportProtocolTest.BroadcastMessageReceiving
+          TransportProtocolTest.BroadcastMessageSending
+          TransportProtocolTest.BroadcastMessageTimeout
+          TransportProtocolTest.DestinationSpecificAbortInitiation
+          TransportProtocolTest.DestinationSpecificAndBroadcastMessageConcurrent
+          TransportProtocolTest.DestinationSpecificConcurrentMessaging
+          TransportProtocolTest.DestinationSpecificMessageReceiving
+          TransportProtocolTest.DestinationSpecificMessageSending
+          TransportProtocolTest.DestinationSpecificMultipleCTS
+          TransportProtocolTest.DestinationSpecificOverwriteSession
+          TransportProtocolTest.DestinationSpecificRandomCTS
+          TransportProtocolTest.DestinationSpecificRejectForOutOfResources
+          TransportProtocolTest.DestinationSpecificTimeoutCompletion
+          TransportProtocolTest.DestinationSpecificTimeoutInitiation
+          VirtualTerminalTest.MessageConstruction
+          EOF
+
+          : > "${RESULTS_DIR}/timeout-tests.txt"
+          printf 'test\tmutant\n' > "${RESULTS_DIR}/timeout-details.tsv"
+          printf 'test\tclassification\n' > "${RESULTS_DIR}/classification.tsv"
+
+          cd build/test
+
+          while IFS= read -r test_name; do
+            [ -n "${test_name}" ] || continue
+            safe_name="$(printf '%s' "${test_name}" | tr -c 'A-Za-z0-9._-' '_')"
+            log_file="${RESULTS_DIR}/logs/${safe_name}.log"
+
+            echo "=== ${test_name} ==="
+            set +e
+            mull-runner-19 \
+              --allow-surviving \
+              --debug \
+              --timeout 15000 \
+              --coverage-info "${GITHUB_WORKSPACE}/all-tests.profdata" \
+              --reporters IDE \
+              ./unit_tests \
+              --gtest_filter="${test_name}" \
+              --gtest_color=no \
+              > "${log_file}" 2>&1
+            runner_status=$?
+            set -e
+
+            cat "${log_file}"
+
+            if grep -q -- '-> Timedout' "${log_file}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/timeout-tests.txt"
+              grep -- '-> Timedout' "${log_file}" |
+                sed -E 's/.*Running: //; s/ -> Timedout.*//' |
+                while IFS= read -r mutant; do
+                  printf '%s\t%s\n' "${test_name}" "${mutant}" >> "${RESULTS_DIR}/timeout-details.tsv"
+                done
+              classification="TIMEOUT"
+            elif grep -q -- '-> Killed' "${log_file}"; then
+              classification="KILLED"
+            elif grep -q -- '-> Survived' "${log_file}"; then
+              classification="SURVIVED"
+            else
+              classification="NO_RESULT(exit=${runner_status})"
+            fi
+
+            printf '%s\t%s\n' "${test_name}" "${classification}" >> "${RESULTS_DIR}/classification.tsv"
+          done < "${RESULTS_DIR}/covering-tests.txt"
+
+          sort -u "${RESULTS_DIR}/timeout-tests.txt" \
+            -o "${RESULTS_DIR}/timeout-tests.txt"
+
+      - name: Publish timeout summary
+        if: always()
+        shell: bash
+        run: |
+          RESULTS_DIR="${GITHUB_WORKSPACE}/mull-timeout-results"
+          {
+            echo "## Tests timing out with can_control_function.cpp line 34 mutants"
+            echo
+            if [ -s "${RESULTS_DIR}/timeout-tests.txt" ]; then
+              echo '```text'
+              cat "${RESULTS_DIR}/timeout-tests.txt"
+              echo '```'
+            else
+              echo "No timeout-producing test was identified."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload timeout identification results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: can-control-function-timeout-tests
+          path: |
+            mull-timeout-results/
+            mull-can-control-function.yml
+            all-tests.profdata
+          if-no-files-found: warn
+          retention-days: 30
