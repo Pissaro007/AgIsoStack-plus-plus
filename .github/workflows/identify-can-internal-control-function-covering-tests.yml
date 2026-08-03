@@ -1,0 +1,214 @@
+name: Identify Tests Covering CAN INTERNAL CONTROL FUNCTION Mutants
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - quality/mull-can-internal-control-function
+    paths:
+      - .github/workflows/identify-can-internal-control-function-covering-tests.yml
+
+permissions:
+  contents: read
+
+jobs:
+  identify-tests:
+    name: Identify unit tests covering can_internal_control_function mutants
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-19 \
+            llvm-19 \
+            build-essential \
+            cmake \
+            ninja-build
+
+      - name: Configure tests with LLVM coverage
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS="-O0 -g -fprofile-instr-generate -fcoverage-mapping" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -fprofile-instr-generate -fcoverage-mapping" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Compile unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build --parallel
+          test -x build/test/unit_tests
+
+      - name: List selected unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cd build/test
+
+          ./unit_tests \
+            --gtest_list_tests \
+            --gtest_color=no \
+            > "${GITHUB_WORKSPACE}/gtest-list.txt"
+
+          awk '
+            /^[^[:space:]]/ {
+              suite = $1
+              sub(/\.$/, "", suite)
+              next
+            }
+            /^[[:space:]]+/ {
+              test = $1
+              sub(/#.*/, "", test)
+              if (suite != "" && test != "") {
+                print suite "." test
+              }
+            }
+          ' "${GITHUB_WORKSPACE}/gtest-list.txt" \
+            > "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+          test -s "${GITHUB_WORKSPACE}/selected-tests.txt"
+          echo "Selected tests: $(wc -l < "${GITHUB_WORKSPACE}/selected-tests.txt")"
+
+      - name: Identify tests covering surviving mutants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_FILE="${GITHUB_WORKSPACE}/isobus/src/can_internal_control_function.cpp"
+          RESULTS_DIR="${GITHUB_WORKSPACE}/per-test-coverage"
+          REPORT_FILE="${GITHUB_WORKSPACE}/tests-covering-can-internal-control-function-mutants.txt"
+          FAILED_FILE="${GITHUB_WORKSPACE}/tests-not-analysed.txt"
+
+          test -f "${SOURCE_FILE}"
+          mkdir -p "${RESULTS_DIR}"
+
+          : > "${RESULTS_DIR}/line-39-tests.txt"
+          : > "${FAILED_FILE}"
+
+          cd build/test
+
+          index=0
+          while IFS= read -r test_name; do
+            index=$((index + 1))
+
+            profile_raw="${RESULTS_DIR}/test-${index}.profraw"
+            profile_data="${RESULTS_DIR}/test-${index}.profdata"
+            coverage_text="${RESULTS_DIR}/test-${index}.txt"
+
+            echo "[${index}] ${test_name}"
+
+            if ! LLVM_PROFILE_FILE="${profile_raw}" \
+              ./unit_tests \
+                --gtest_filter="${test_name}" \
+                --gtest_color=no \
+                > /dev/null 2>&1; then
+              echo "${test_name}" >> "${FAILED_FILE}"
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            if [ ! -s "${profile_raw}" ]; then
+              echo "${test_name}" >> "${FAILED_FILE}"
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            llvm-profdata-19 merge \
+              -sparse \
+              "${profile_raw}" \
+              -o "${profile_data}"
+
+            llvm-cov-19 show \
+              ./unit_tests \
+              -instr-profile="${profile_data}" \
+              "${SOURCE_FILE}" \
+              > "${coverage_text}"
+
+            if awk -F'|' '
+              {
+                line = $1
+                count = $2
+                gsub(/[[:space:]]/, "", line)
+                gsub(/[[:space:]]/, "", count)
+                if (line == "39" && count != "" && count != "0") {
+                  found = 1
+                }
+              }
+              END { exit(found ? 0 : 1) }
+            ' "${coverage_text}"; then
+              echo "${test_name}" >> "${RESULTS_DIR}/line-39-tests.txt"
+            fi
+
+            rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+          done < "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+          sort -u "${RESULTS_DIR}/line-39-tests.txt" \
+            -o "${RESULTS_DIR}/line-39-tests.txt"
+
+          {
+            echo "Surviving mutants in can_internal_control_function.cpp"
+            echo
+            echo "Line 39 - Mutated expression"
+            echo "Mutant: Replaced * with / [cxx_mul_to_div]"
+            echo
+            echo "Tests covering line 39:"
+            if [ -s "${RESULTS_DIR}/line-39-tests.txt" ]; then
+              cat "${RESULTS_DIR}/line-39-tests.txt"
+            else
+              echo "No individual test found"
+            fi
+            echo
+            echo "Tests not analysed successfully"
+            if [ -s "${FAILED_FILE}" ]; then
+              cat "${FAILED_FILE}"
+            else
+              echo "None"
+            fi
+          } | tee "${REPORT_FILE}"
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Tests covering CAN INTERNAL CONTROL FUNCTION mutants"
+            echo
+            echo '```text'
+            cat tests-covering-can-internal-control-function-mutants.txt 2>/dev/null || \
+              echo "The identification report was not generated."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload identification report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: can-internal-control-function-covering-tests
+          path: |
+            tests-covering-can-internal-control-function-mutants.txt
+            tests-not-analysed.txt
+            selected-tests.txt
+            gtest-list.txt
+            per-test-coverage/line-39-tests.txt
+          if-no-files-found: warn
+          retention-days: 30
