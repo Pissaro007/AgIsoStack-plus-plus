@@ -1440,6 +1440,37 @@ TEST_F(TaskControllerClientTest, CallbackTests)
 	interfaceUnderTest.add_value_command_callback(value_command_callback, nullptr);
 	interfaceUnderTest.test_wrapper_set_state(TaskControllerClient::StateMachineState::Connected);
 
+	valueRequested = false;
+	valueCommanded = false;
+	requestedDDI = 0;
+	commandedDDI = 0;
+	requestedElement = 0;
+	commandedElement = 0;
+	commandedValue = 0;
+	
+	// A message with a different PGN must not invoke the registered TC callbacks.
+	testFrame.identifier = 0x18CC86F7;
+	testFrame.data[0] = 0x82;
+	testFrame.data[1] = 0x04;
+	testFrame.data[2] = 0x12;
+	testFrame.data[3] = 0x34;
+	testFrame.data[4] = 0x00;
+	testFrame.data[5] = 0x00;
+	testFrame.data[6] = 0x00;
+	testFrame.data[7] = 0x00;
+	
+	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
+	CANNetworkManager::CANNetwork.update();
+	interfaceUnderTest.update();
+	
+	EXPECT_FALSE(valueRequested);
+	EXPECT_FALSE(valueCommanded);
+	EXPECT_EQ(0, requestedDDI);
+	EXPECT_EQ(0, requestedElement);
+	EXPECT_EQ(0, commandedDDI);
+	EXPECT_EQ(0, commandedElement);
+	EXPECT_EQ(0, commandedValue);
+	
 	// Status message
 	testFrame.identifier = 0x18CBFFF7;
 	testFrame.data[0] = 0xFE; // Status mux
