@@ -365,7 +365,14 @@ TEST_F(CoreTest, SimilarControlFunctions)
 	// Quick test to make sure partner is working
 	EXPECT_EQ(1, TestPartner->get_number_name_filters_with_parameter_type(isobus::NAME::NAMEParameters::FunctionCode));
 	EXPECT_EQ(1, TestPartner->get_number_name_filters_with_parameter_type(isobus::NAME::NAMEParameters::EcuInstance));
+	EXPECT_EQ(0, TestPartner->get_number_name_filters_with_parameter_type(isobus::NAME::NAMEParameters::ManufacturerCode));
 	
+	NAME partiallyMatchingNAME(0);
+	partiallyMatchingNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::FuelSystem));
+	partiallyMatchingNAME.set_ecu_instance(1);
+	
+	EXPECT_FALSE(TestPartner->check_matches_name(partiallyMatchingNAME));
+		
 	isobus::NAME::NAMEParameters filterParameter = isobus::NAME::NAMEParameters::IdentityNumber;
 	std::uint32_t filterValue = 0;
 	
