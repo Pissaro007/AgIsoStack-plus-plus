@@ -112,7 +112,7 @@ TEST_F(TimeDateTest, ReceivingMessages)
 	// 8. Local minute offset is 0
 	testFrame.identifier = 0x18FEE647;
 	testFrame.dataLength = 8;
-	testFrame.data[0] = 0xA4;
+	testFrame.data[0] = 0xA7;
 	testFrame.data[1] = 0x31;
 	testFrame.data[2] = 0x16;
 	testFrame.data[3] = 0x08;
@@ -131,7 +131,7 @@ TEST_F(TimeDateTest, ReceivingMessages)
 	EXPECT_EQ(testTimeDateInformation.timeAndDate.hours, 22);
 	EXPECT_EQ(testTimeDateInformation.timeAndDate.minutes, 49);
 	EXPECT_EQ(testTimeDateInformation.timeAndDate.seconds, 41);
-	EXPECT_EQ(testTimeDateInformation.timeAndDate.milliseconds, 0);
+	EXPECT_EQ(testTimeDateInformation.timeAndDate.milliseconds, 750);
 	EXPECT_EQ(testTimeDateInformation.timeAndDate.localHourOffset, -5);
 	EXPECT_EQ(testTimeDateInformation.timeAndDate.localMinuteOffset, 0);
 
@@ -198,7 +198,7 @@ TEST_F(TimeDateTest, TransmitMessages)
 		timeAndDateToPopulate.hours = 22;
 		timeAndDateToPopulate.minutes = 49;
 		timeAndDateToPopulate.seconds = 41;
-		timeAndDateToPopulate.milliseconds = 0;
+		timeAndDateToPopulate.milliseconds = 750;
 		timeAndDateToPopulate.localHourOffset = -5;
 		timeAndDateToPopulate.localMinuteOffset = 0;
 		return true;
@@ -228,7 +228,7 @@ TEST_F(TimeDateTest, TransmitMessages)
 	EXPECT_TRUE(testPlugin.read_frame(testFrame));
 	EXPECT_EQ(0x18FEE644, testFrame.identifier);
 	EXPECT_EQ(0x08, testFrame.dataLength);
-	EXPECT_EQ(0xA4, testFrame.data[0]);
+	EXPECT_EQ(0xA7, testFrame.data[0]);
 	EXPECT_EQ(0x31, testFrame.data[1]);
 	EXPECT_EQ(0x16, testFrame.data[2]);
 	EXPECT_EQ(0x08, testFrame.data[3]);
