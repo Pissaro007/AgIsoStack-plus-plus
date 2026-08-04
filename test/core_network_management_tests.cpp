@@ -357,6 +357,10 @@ TEST_F(CoreTest, SimilarControlFunctions)
 	// Make a partner that is a fuel system
 	// Using a less common function to avoid interfering with other tests when not running under CTest
 
+	const isobus::NAMEFilter filterFuelSystem(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::FuelSystem));
+	const isobus::NAMEFilter filterEcuInstance(isobus::NAME::NAMEParameters::EcuInstance, 0);
+	const std::vector<isobus::NAMEFilter> nameFilters = {filterFuelSystem, filterEcuInstance};
+	
 	auto TestPartner = isobus::CANNetworkManager::CANNetwork.create_partnered_control_function(0, nameFilters);
 	const isobus::NAMEFilter filterFuelSystem(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::FuelSystem));
 	const isobus::NAMEFilter filterEcuInstance(isobus::NAME::NAMEParameters::EcuInstance, 0);
