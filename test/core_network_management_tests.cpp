@@ -362,9 +362,6 @@ TEST_F(CoreTest, SimilarControlFunctions)
 	const std::vector<isobus::NAMEFilter> nameFilters = {filterFuelSystem, filterEcuInstance};
 	
 	auto TestPartner = isobus::CANNetworkManager::CANNetwork.create_partnered_control_function(0, nameFilters);
-	const isobus::NAMEFilter filterFuelSystem(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::FuelSystem));
-	const isobus::NAMEFilter filterEcuInstance(isobus::NAME::NAMEParameters::EcuInstance, 0);
-	const std::vector<isobus::NAMEFilter> nameFilters = { filterFuelSystem, filterEcuInstance };
 	// Quick test to make sure partner is working
 	EXPECT_EQ(1, TestPartner->get_number_name_filters_with_parameter_type(isobus::NAME::NAMEParameters::FunctionCode));
 	EXPECT_EQ(1, TestPartner->get_number_name_filters_with_parameter_type(isobus::NAME::NAMEParameters::EcuInstance));
