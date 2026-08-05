@@ -356,13 +356,50 @@ TEST_F(CoreTest, SimilarControlFunctions)
 
 	// Make a partner that is a fuel system
 	// Using a less common function to avoid interfering with other tests when not running under CTest
-	const isobus::NAMEFilter filterFuelSystem(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::FuelSystem));
-	const std::vector<isobus::NAMEFilter> nameFilters = { filterFuelSystem };
-	auto TestPartner = isobus::CANNetworkManager::CANNetwork.create_partnered_control_function(0, nameFilters);
 
+	const isobus::NAMEFilter filterFuelSystem(isobus::NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(isobus::NAME::Function::FuelSystem));
+	const isobus::NAMEFilter filterEcuInstance(isobus::NAME::NAMEParameters::EcuInstance, 0);
+	const std::vector<isobus::NAMEFilter> nameFilters = {filterFuelSystem, filterEcuInstance};
+	
+	auto TestPartner = isobus::CANNetworkManager::CANNetwork.create_partnered_control_function(0, nameFilters);
 	// Quick test to make sure partner is working
 	EXPECT_EQ(1, TestPartner->get_number_name_filters_with_parameter_type(isobus::NAME::NAMEParameters::FunctionCode));
+	EXPECT_EQ(1, TestPartner->get_number_name_filters_with_parameter_type(isobus::NAME::NAMEParameters::EcuInstance));
+	EXPECT_EQ(0, TestPartner->get_number_name_filters_with_parameter_type(isobus::NAME::NAMEParameters::ManufacturerCode));
+	
+	NAME partiallyMatchingNAME(0);
+	partiallyMatchingNAME.set_function_code(static_cast<std::uint8_t>(isobus::NAME::Function::FuelSystem));
+	partiallyMatchingNAME.set_ecu_instance(1);
+	
+	EXPECT_FALSE(TestPartner->check_matches_name(partiallyMatchingNAME));
+		
+	isobus::NAME::NAMEParameters filterParameter = isobus::NAME::NAMEParameters::IdentityNumber;
+	std::uint32_t filterValue = 0;
+	
+	EXPECT_TRUE(TestPartner->get_name_filter_parameter(0, filterParameter, filterValue));
+	EXPECT_EQ(isobus::NAME::NAMEParameters::FunctionCode, filterParameter);
+	EXPECT_EQ(static_cast<std::uint8_t>(isobus::NAME::Function::FuelSystem), filterValue);
+	
+	filterParameter = isobus::NAME::NAMEParameters::IdentityNumber;
+	filterValue = 0;
+	
+	EXPECT_TRUE(TestPartner->get_name_filter_parameter(1, filterParameter, filterValue));
+	EXPECT_EQ(isobus::NAME::NAMEParameters::EcuInstance, filterParameter);
+	EXPECT_EQ(0, filterValue);
+	
+	filterParameter = isobus::NAME::NAMEParameters::IdentityNumber;
+	filterValue = 0xFFFFFFFF;
+	
+	EXPECT_FALSE(TestPartner->get_name_filter_parameter(TestPartner->get_number_name_filters(), filterParameter, filterValue));
+	EXPECT_EQ(isobus::NAME::NAMEParameters::IdentityNumber, filterParameter);
+	EXPECT_EQ(0xFFFFFFFF, filterValue);
 
+	const std::vector<isobus::NAMEFilter> emptyNameFilters;
+	auto partnerWithoutFilters = isobus::CANNetworkManager::CANNetwork.create_partnered_control_function(0, emptyNameFilters);
+	
+	EXPECT_EQ(0, partnerWithoutFilters->get_number_name_filters());
+	EXPECT_FALSE(partnerWithoutFilters->check_matches_name(NAME(0)));	
+	
 	// Request the address claim PGN
 	CANNetworkManager::CANNetwork.process_receive_can_message_frame(test_helpers::create_message_frame_pgn_request(
 	  0xEE00, // Address Claim PGN
@@ -422,5 +459,7 @@ TEST_F(CoreTest, SimilarControlFunctions)
 
 	// Partner should never change
 	EXPECT_EQ(TestPartner->get_NAME().get_full_name(), 0xa0000F000425e9f8);
+	
+	CANNetworkManager::CANNetwork.deactivate_control_function(partnerWithoutFilters);	
 	CANNetworkManager::CANNetwork.deactivate_control_function(TestPartner);
 }
