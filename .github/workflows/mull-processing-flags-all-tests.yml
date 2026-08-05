@@ -9,7 +9,7 @@ on:
     branches:
       - mutation/procssecing-flegs
     paths:
-      - .github/workflows/mull-processing-flags.yml
+      - .github/workflows/mull-processing-flags-all-tests.yml
 
 permissions:
   contents: read
