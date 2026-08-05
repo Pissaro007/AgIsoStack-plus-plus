@@ -1408,6 +1408,13 @@ bool value_command_callback(std::uint16_t element,
 	return true;
 }
 
+static bool wrongPGNCallbackCalled = false;
+
+void wrong_pgn_callback(const CANMessage &, void *)
+{
+	wrongPGNCallbackCalled = true;
+}
+
 TEST_F(TaskControllerClientTest, CallbackTests)
 {
 	VirtualCANPlugin serverTC;
@@ -1594,6 +1601,10 @@ TEST_F(TaskControllerClientTest, CallbackTests)
 	// Test time interval measurement commands
 	interfaceUnderTest.add_request_value_callback(request_value_command_callback, nullptr);
 	interfaceUnderTest.add_value_command_callback(value_command_callback, nullptr);
+
+	wrongPGNCallbackCalled = false;
+	TestPartnerTC->add_parameter_group_number_callback(0xCC00, wrong_pgn_callback, nullptr, internalECU);
+
 	// Create a command
 	testFrame.identifier = 0x18CB86F7;
 	testFrame.data[0] = 0xA4;
@@ -1636,6 +1647,7 @@ TEST_F(TaskControllerClientTest, CallbackTests)
 	CANNetworkManager::CANNetwork.update();
 	interfaceUnderTest.update();
 
+	EXPECT_FALSE(wrongPGNCallbackCalled);
 	EXPECT_EQ(true, valueRequested);
 	EXPECT_EQ(requestedDDI, 0x3919);
 
@@ -1743,6 +1755,8 @@ TEST_F(TaskControllerClientTest, CallbackTests)
 	EXPECT_EQ(true, valueRequested);
 	EXPECT_EQ(requestedDDI, 0x03);
 	EXPECT_EQ(requestedElement, 0x4);
+
+	TestPartnerTC->remove_parameter_group_number_callback(0xCC00, wrong_pgn_callback, nullptr, internalECU);
 
 	CANHardwareInterface::stop();
 
