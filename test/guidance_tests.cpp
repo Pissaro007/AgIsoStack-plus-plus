@@ -4,12 +4,13 @@
 #include "isobus/hardware_integration/virtual_can_plugin.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_guidance_interface.hpp"
+#include "isobus/utility/processing_flags.hpp"
 #include "isobus/utility/system_timing.hpp"
-
 #include "helpers/control_function_helpers.hpp"
 #include "helpers/test_fixture.hpp"
 
 #include <cmath>
+#include <vector>
 
 using namespace isobus;
 
@@ -80,7 +81,34 @@ TEST_F(GuidanceTest, GuidanceMessages)
 	{
 		testPlugin.read_frame(testFrame);
 	}
+	
 	ASSERT_TRUE(testPlugin.get_queue_empty());
+	// Exercise ProcessingFlags across a byte boundary.
+	// Flag 8 is both the maximum allowed flag and the first flag
+	// stored in the second byte.
+	{
+		std::vector<std::uint32_t> processedFlags;
+
+		ProcessingFlags processingFlags(
+		  8,
+		  std::uint32_t flag, void *parent {
+			  auto *flags = static_cast<std::vector<std::uint32_t> *>(parent);
+			  flags->push_back(flag);
+		  },
+		  &processedFlags);
+
+		processingFlags.set_flag(7);
+		processingFlags.set_flag(8);
+		processingFlags.process_all_flags();
+
+		ASSERT_EQ(2, processedFlags.size());
+		EXPECT_EQ(7, processedFlags.at(0));
+		EXPECT_EQ(8, processedFlags.at(1));
+
+		// Processing must clear both flags.
+		processingFlags.process_all_flags();
+		EXPECT_EQ(2, processedFlags.size());
+	}
 
 	{
 		TestGuidanceInterface interfaceUnderTest(testECU, nullptr); // Configured for broadcasts, but no message is configured periodically
