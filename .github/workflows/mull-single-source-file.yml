@@ -1,4 +1,4 @@
-name: Mull - CAN PARTNERED CONTROL FUNCTION - All Tests
+name: Mull - Single Source File - All Tests
 
 on:
   workflow_dispatch:
@@ -7,22 +7,13 @@ on:
         description: "Chemin du fichier source à muter"
         required: true
         type: string
-        default: "isobus/src/can_partnered_control_function.cpp"
-
-  # Le workflow n'étant pas encore présent sur main, ce déclencheur permet
-  # de l'exécuter lorsque son propre fichier est créé ou modifié.
-  push:
-    branches:
-      - quality/mutation-testing-can-partnered-control-function
-    paths:
-      - .github/workflows/mull-can-partnered-control-function-all-unit-tests.yml
 
 permissions:
   contents: read
 
 jobs:
-  can-partnered-control-function:
-    name: Mutation testing - can_partnered_control_function - all tests
+  mutation-testing:
+    name: Mutation testing - single source file - all tests
     runs-on: ubuntu-24.04
 
     steps:
@@ -69,12 +60,18 @@ jobs:
 
       - name: Create Mull configuration
         shell: bash
+        env:
+          SOURCE_FILE: ${{ inputs.source_file }}
         run: |
           set -euo pipefail
 
-          cat > mull-can-partnered-control-function.yml <<'EOF'
+          test -f "${SOURCE_FILE}"
+
+          ESCAPED_SOURCE_FILE=$(printf '%s' "${SOURCE_FILE}" | sed 's#[][\\.^$*+?(){}|]#\\&#g')
+
+          cat > mull-config.yml <<EOF
           includePaths:
-            - ".*isobus/src/can_partnered_control_function\\.cpp$"
+            - ".*${ESCAPED_SOURCE_FILE}$"
           excludePaths:
             - ".*googletest.*"
             - ".*googlemock.*"
@@ -84,14 +81,14 @@ jobs:
           EOF
 
           echo "=== Mull configuration ==="
-          cat mull-can-partnered-control-function.yml
+          cat mull-config.yml
 
       - name: Configure tests for Mull and LLVM coverage
         shell: bash
         env:
           CC: clang-19
           CXX: clang++-19
-          MULL_CONFIG: ${{ github.workspace }}/mull-can-partnered-control-function.yml
+          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
         run: |
           set -euo pipefail
 
@@ -140,19 +137,21 @@ jobs:
           
       - name: Generate readable coverage report
         shell: bash
+        env:
+          SOURCE_FILE: ${{ inputs.source_file }}
         run: |
           set -euo pipefail
 
           llvm-cov-19 show \
             build/test/unit_tests \
             -instr-profile=all-tests.profdata \
-            isobus/src/can_partnered_control_function.cpp \
-            | tee can-partnered-control-function-coverage.txt
+            "${SOURCE_FILE}" \
+            | tee source-file-coverage.txt
 
       - name: Run Mull with all unit tests
         shell: bash
         env:
-          MULL_CONFIG: ${{ github.workspace }}/mull-can-partnered-control-function.yml
+          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
         run: |
           set -euo pipefail
 
@@ -168,7 +167,7 @@ jobs:
             --reporters IDE \
             --reporters Elements \
             --report-dir "${GITHUB_WORKSPACE}/mull-results" \
-            --report-name can-partnered-control-function-all-tests \
+            --report-name single-source-file-all-tests \
             ./unit_tests \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/mull-results/mull-console.log"
@@ -188,12 +187,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: mull-can-partnered-control-function-all-unit-tests
+          name: mull-single-source-file-all-unit-tests
           path: |
             mull-results/
-            mull-can-partnered-control-function.yml
+            mull-config.yml
             all-tests-baseline.log
             all-tests.profdata
-            can-partnered-control-function-coverage.txt
+            source-file-coverage.txt
           if-no-files-found: warn
           retention-days: 30
