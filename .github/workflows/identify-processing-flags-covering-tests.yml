@@ -5,7 +5,7 @@ on:
 
   push:
     branches:
-      - mutation/procssecing-flegs
+      - quality/mull-processing-flags
     paths:
       - .github/workflows/identify-processing-flags-covering-tests.yml
 
