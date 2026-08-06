@@ -8,8 +8,17 @@ on:
         required: true
         type: string
 
+  push:
+    branches:
+      - quality/generic-mull-workflows
+    paths:
+      - .github/workflows/mull-single-source-file.yml
+
 permissions:
   contents: read
+
+env:
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/can_partnered_control_function.cpp' }}
 
 jobs:
   mutation-testing:
@@ -60,8 +69,6 @@ jobs:
 
       - name: Create Mull configuration
         shell: bash
-        env:
-          SOURCE_FILE: ${{ inputs.source_file }}
         run: |
           set -euo pipefail
 
@@ -137,8 +144,6 @@ jobs:
           
       - name: Generate readable coverage report
         shell: bash
-        env:
-          SOURCE_FILE: ${{ inputs.source_file }}
         run: |
           set -euo pipefail
 
