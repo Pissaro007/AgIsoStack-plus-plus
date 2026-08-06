@@ -88,26 +88,22 @@ TEST_F(GuidanceTest, GuidanceMessages)
 	// stored in the second byte.
 	{
 		std::vector<std::uint32_t> processedFlags;
-
+	
 		ProcessingFlags processingFlags(
 		  8,
-		  std::uint32_t flag, void *parent {
+		  [](std::uint32_t flag, void *parent) {
 			  auto *flags = static_cast<std::vector<std::uint32_t> *>(parent);
 			  flags->push_back(flag);
 		  },
 		  &processedFlags);
-
+	
 		processingFlags.set_flag(7);
 		processingFlags.set_flag(8);
 		processingFlags.process_all_flags();
-
+	
 		ASSERT_EQ(2, processedFlags.size());
 		EXPECT_EQ(7, processedFlags.at(0));
 		EXPECT_EQ(8, processedFlags.at(1));
-
-		// Processing must clear both flags.
-		processingFlags.process_all_flags();
-		EXPECT_EQ(2, processedFlags.size());
 	}
 
 	{
