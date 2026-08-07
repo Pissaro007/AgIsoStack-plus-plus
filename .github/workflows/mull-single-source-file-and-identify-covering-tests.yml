@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_FILE: ${{ inputs.source_file || 'utility/src/processing_flags.cpp' }}
+  SOURCE_FILE: ${{ inputs.source_file || 'utility/src/isobus_time_date_interface.cpp' }}
   TEST_EXECUTABLE: build/test/unit_tests
 
 jobs:
