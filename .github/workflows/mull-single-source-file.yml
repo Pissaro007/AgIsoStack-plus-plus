@@ -1,7 +1,5 @@
 name: Mull - Single Source File - All Tests
 
-#re run #1
-
 on:
   workflow_dispatch:
     inputs:
@@ -20,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/can_partnered_control_function.cpp' }}
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_time_date_interface.cpp' }}
 
 jobs:
   mutation-testing:
