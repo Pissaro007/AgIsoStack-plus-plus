@@ -185,30 +185,43 @@ jobs:
           source_file = os.environ["SOURCE_FILE"].replace("\\", "/")
           log_file = Path("mull-results/mull-console.log")
           output_file = Path("surviving-mutants.tsv")
-          pattern = re.compile(
-              r"^(.*?):(\d+):(\d+): warning: Survived: (.*?) \[([^]]+)]\s*$"
+
+          ansi_pattern = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+          mutant_pattern = re.compile(
+              r"(.*?):(\d+):(\d+):\s*warning:\s*Survived:\s*(.*?)\s*\[([^\]]+)\]"
           )
 
           rows = []
-          for raw_line in log_file.read_text(encoding="utf-8", errors="replace").splitlines():
-              match = pattern.match(raw_line.strip())
+
+          for raw_line in log_file.read_text(
+              encoding="utf-8", errors="replace"
+          ).splitlines():
+              line = ansi_pattern.sub("", raw_line).strip()
+              match = mutant_pattern.search(line)
+
               if not match:
                   continue
-              path, line, column, description, operator = match.groups()
+
+              path, line_number, column, description, operator = match.groups()
+
               if path.replace("\\", "/").endswith(source_file):
-                  rows.append((line, column, description, operator))
+                  rows.append(
+                      (line_number, column, description.strip(), operator.strip())
+                  )
 
           with output_file.open("w", encoding="utf-8") as output:
               for row in rows:
                   output.write("\t".join(row) + "\n")
 
-          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
+          with Path(os.environ["GITHUB_OUTPUT"]).open(
+              "a", encoding="utf-8"
+          ) as output:
               output.write(f"count={len(rows)}\n")
           PY
 
           echo "=== Surviving mutants ==="
           cat surviving-mutants.tsv
-
+          
       - name: List unit tests
         if: steps.surviving-mutants.outputs.count != '0'
         shell: bash
