@@ -18,7 +18,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_time_date_interface.cpp' }}
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/can_NAME.cpp' }}
 
 jobs:
   mutation-testing:
