@@ -20,7 +20,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/can_NAME_filter.cpp' }}
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_heartbeat.cpp' }}
   TEST_EXECUTABLE: build/test/unit_tests
 
 jobs:
