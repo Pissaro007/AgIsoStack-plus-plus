@@ -186,9 +186,11 @@ jobs:
           log_file = Path("mull-results/mull-console.log")
           output_file = Path("surviving-mutants.tsv")
 
-          ansi_pattern = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
-          mutant_pattern = re.compile(
-              r"(.*?):(\d+):(\d+):\s*warning:\s*Survived:\s*(.*?)\s*\[([^\]]+)\]"
+          pattern = re.compile(
+              r"\[\d+/\d+\]\s+"
+              r"([^:]+):"
+              r"(.+?):"
+              r"(\d+):(\d+):\d+:\d+\s+->\s+Passed"
           )
 
           rows = []
@@ -196,18 +198,19 @@ jobs:
           for raw_line in log_file.read_text(
               encoding="utf-8", errors="replace"
           ).splitlines():
-              line = ansi_pattern.sub("", raw_line).strip()
-              match = mutant_pattern.search(line)
+              match = pattern.search(raw_line)
 
               if not match:
                   continue
 
-              path, line_number, column, description, operator = match.groups()
+              operator, path, line, column = match.groups()
 
               if path.replace("\\", "/").endswith(source_file):
                   rows.append(
-                      (line_number, column, description.strip(), operator.strip())
+                      (line, column, f"Survived mutation {operator}", operator)
                   )
+
+          rows = list(dict.fromkeys(rows))
 
           with output_file.open("w", encoding="utf-8") as output:
               for row in rows:
