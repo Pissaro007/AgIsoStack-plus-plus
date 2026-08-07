@@ -80,7 +80,7 @@ jobs:
 
           cat > mull-config.yml <<EOF
           includePaths:
-            - ".*${ESCAPED_SOURCE_FILE}$"
+            - '.*${ESCAPED_SOURCE_FILE}$'
           excludePaths:
             - ".*googletest.*"
             - ".*googlemock.*"
