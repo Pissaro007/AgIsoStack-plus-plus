@@ -119,7 +119,9 @@ jobs:
 
           rm -f all-tests.profraw all-tests.profdata
 
-          "${TEST_EXECUTABLE}" \
+          cd build/test
+          
+          ./unit_tests \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
 
