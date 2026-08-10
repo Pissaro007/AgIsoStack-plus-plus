@@ -18,12 +18,12 @@ permissions:
   contents: read
 
 env:
-  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_heartbeat.cpp' }}
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/can_partnered_control_function.cpp' }}
   TEST_EXECUTABLE: build/test/unit_tests
 
 jobs:
   mutation-testing:
-    name: Mutation testing and covering tests - single source file
+    name: Mutation testing and agent context - single source file
     runs-on: ubuntu-24.04
 
     steps:
@@ -119,14 +119,10 @@ jobs:
 
           rm -f all-tests.profraw all-tests.profdata
 
-          cd build/test
-          
-          ./unit_tests \
+          "${TEST_EXECUTABLE}" \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
 
-          cd "${GITHUB_WORKSPACE}"
-          
           test -s all-tests.profraw
 
           llvm-profdata-19 merge \
@@ -156,8 +152,6 @@ jobs:
 
           mkdir -p "${GITHUB_WORKSPACE}/mull-results"
 
-          cd build/test
-          
           mull-runner-19 \
             --allow-surviving \
             --debug \
@@ -167,7 +161,7 @@ jobs:
             --reporters Elements \
             --report-dir "${GITHUB_WORKSPACE}/mull-results" \
             --report-name single-source-file-all-tests \
-            ./unit_tests \
+            "${TEST_EXECUTABLE}" \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/mull-results/mull-console.log"
 
@@ -185,55 +179,37 @@ jobs:
           source_file = os.environ["SOURCE_FILE"].replace("\\", "/")
           log_file = Path("mull-results/mull-console.log")
           output_file = Path("surviving-mutants.tsv")
-
           pattern = re.compile(
-              r"\[\d+/\d+\]\s+"
-              r"([^:]+):"
-              r"(.+?):"
-              r"(\d+):(\d+):\d+:\d+\s+->\s+Passed"
+              r"^(.*?):(\d+):(\d+): warning: Survived: (.*?) \[([^]]+)]\s*$"
           )
 
           rows = []
-
-          for raw_line in log_file.read_text(
-              encoding="utf-8", errors="replace"
-          ).splitlines():
-              match = pattern.search(raw_line)
-
+          for raw_line in log_file.read_text(encoding="utf-8", errors="replace").splitlines():
+              match = pattern.match(raw_line.strip())
               if not match:
                   continue
-
-              operator, path, line, column = match.groups()
-
+              path, line, column, description, operator = match.groups()
               if path.replace("\\", "/").endswith(source_file):
-                  rows.append(
-                      (line, column, f"Survived mutation {operator}", operator)
-                  )
-
-          rows = list(dict.fromkeys(rows))
+                  rows.append((line, column, description, operator))
 
           with output_file.open("w", encoding="utf-8") as output:
               for row in rows:
                   output.write("\t".join(row) + "\n")
 
-          with Path(os.environ["GITHUB_OUTPUT"]).open(
-              "a", encoding="utf-8"
-          ) as output:
+          with Path(os.environ["GITHUB_OUTPUT"]).open("a", encoding="utf-8") as output:
               output.write(f"count={len(rows)}\n")
           PY
 
           echo "=== Surviving mutants ==="
           cat surviving-mutants.tsv
-          
+
       - name: List unit tests
         if: steps.surviving-mutants.outputs.count != '0'
         shell: bash
         run: |
           set -euo pipefail
 
-          cd build/test
-
-          ./unit_tests \
+          "${TEST_EXECUTABLE}" \
             --gtest_list_tests \
             --gtest_color=no \
             > "${GITHUB_WORKSPACE}/gtest-list.txt"
@@ -285,15 +261,11 @@ jobs:
 
             echo "[${index}] ${test_name}"
 
-            if ! (
-              cd "${GITHUB_WORKSPACE}/build/test"
-
-              LLVM_PROFILE_FILE="${profile_raw}" \
-                ./unit_tests \
-                  --gtest_filter="${test_name}" \
-                  --gtest_color=no \
-                  > /dev/null 2>&1
-              ); then
+            if ! LLVM_PROFILE_FILE="${profile_raw}" \
+              "${TEST_EXECUTABLE_ABS}" \
+                --gtest_filter="${test_name}" \
+                --gtest_color=no \
+                > /dev/null 2>&1; then
               echo "${test_name}" >> "${FAILED_FILE}"
               rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
               continue
@@ -389,9 +361,7 @@ jobs:
           context_radius = 5
 
           if not source_file.is_file():
-              raise FileNotFoundError(
-                  f"Source file not found: {source_file}"
-              )
+              raise FileNotFoundError(f"Source file not found: {source_file}")
 
           source_lines = source_file.read_text(
               encoding="utf-8",
@@ -401,7 +371,6 @@ jobs:
           def read_non_empty_lines(path):
               if not path.is_file():
                   return []
-
               return [
                   line.strip()
                   for line in path.read_text(
@@ -420,20 +389,14 @@ jobs:
                   }
 
               start_line = max(1, target_line - context_radius)
-              end_line = min(
-                  len(source_lines),
-                  target_line + context_radius,
-              )
+              end_line = min(len(source_lines), target_line + context_radius)
 
               code = []
-
               for line_number in range(start_line, end_line + 1):
                   code.append(
                       {
                           "line": line_number,
-                          "is_mutated_line": (
-                              line_number == target_line
-                          ),
+                          "is_mutated_line": line_number == target_line,
                           "content": source_lines[line_number - 1],
                       }
                   )
@@ -452,10 +415,7 @@ jobs:
                   errors="replace",
               ).splitlines()
 
-              for input_line_number, raw_line in enumerate(
-                  mutant_lines,
-                  start=1,
-              ):
+              for input_line_number, raw_line in enumerate(mutant_lines, start=1):
                   if not raw_line.strip():
                       continue
 
@@ -467,12 +427,7 @@ jobs:
                           f"{input_line_number}: {raw_line!r}"
                       )
 
-                  (
-                      line_text,
-                      column_text,
-                      description,
-                      operator,
-                  ) = fields
+                  line_text, column_text, description, operator = fields
 
                   try:
                       line_number = int(line_text)
@@ -484,16 +439,11 @@ jobs:
                       ) from error
 
                   covering_tests_file = (
-                      coverage_directory
-                      / f"line-{line_number}-tests.txt"
+                      coverage_directory / f"line-{line_number}-tests.txt"
                   )
 
                   covering_tests = sorted(
-                      set(
-                          read_non_empty_lines(
-                              covering_tests_file
-                          )
-                      )
+                      set(read_non_empty_lines(covering_tests_file))
                   )
 
                   mutants.append(
@@ -507,79 +457,39 @@ jobs:
                           "description": description,
                           "operator": operator,
                           "covering_tests": covering_tests,
-                          "covering_test_count": len(
-                              covering_tests
-                          ),
-                          "source_context": create_source_context(
-                              line_number
-                          ),
+                          "covering_test_count": len(covering_tests),
+                          "source_context": create_source_context(line_number),
                       }
                   )
 
           tests_not_analysed = sorted(
-              set(
-                  read_non_empty_lines(
-                      failed_tests_file
-                  )
-              )
+              set(read_non_empty_lines(failed_tests_file))
           )
 
           report = {
               "schema_version": "1.0",
-              "generated_at_utc": datetime.now(
-                  timezone.utc
-              ).isoformat(),
+              "generated_at_utc": datetime.now(timezone.utc).isoformat(),
               "execution": {
-                  "repository": os.environ.get(
-                      "GITHUB_REPOSITORY",
-                      "",
-                  ),
-                  "ref": os.environ.get(
-                      "GITHUB_REF",
-                      "",
-                  ),
-                  "sha": os.environ.get(
-                      "GITHUB_SHA",
-                      "",
-                  ),
-                  "workflow": os.environ.get(
-                      "GITHUB_WORKFLOW",
-                      "",
-                  ),
-                  "run_id": os.environ.get(
-                      "GITHUB_RUN_ID",
-                      "",
-                  ),
-                  "run_number": os.environ.get(
-                      "GITHUB_RUN_NUMBER",
-                      "",
-                  ),
-                  "run_attempt": os.environ.get(
-                      "GITHUB_RUN_ATTEMPT",
-                      "",
-                  ),
+                  "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+                  "ref": os.environ.get("GITHUB_REF", ""),
+                  "sha": os.environ.get("GITHUB_SHA", ""),
+                  "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+                  "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+                  "run_number": os.environ.get("GITHUB_RUN_NUMBER", ""),
+                  "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
               },
               "mutation_campaign": {
                   "source_file": source_file.as_posix(),
-                  "test_executable": os.environ.get(
-                      "TEST_EXECUTABLE",
-                      "",
-                  ),
+                  "test_executable": os.environ.get("TEST_EXECUTABLE", ""),
                   "surviving_mutant_count": len(mutants),
-                  "tests_not_analysed_count": len(
-                      tests_not_analysed
-                  ),
+                  "tests_not_analysed_count": len(tests_not_analysed),
               },
               "mutants": mutants,
               "tests_not_analysed": tests_not_analysed,
           }
 
           output_file.write_text(
-              json.dumps(
-                  report,
-                  indent=2,
-                  ensure_ascii=False,
-              ) + "\n",
+              json.dumps(report, indent=2, ensure_ascii=False) + "\n",
               encoding="utf-8",
           )
 
@@ -591,7 +501,7 @@ jobs:
 
           echo "=== Agent mutation context ==="
           python3 -m json.tool agent-mutation-context.json
-          
+
       - name: Publish summary
         if: always()
         shell: bash
