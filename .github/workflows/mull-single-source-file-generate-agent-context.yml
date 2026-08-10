@@ -47,6 +47,7 @@ jobs:
             | sudo -E bash
           sudo apt-get update
           sudo apt-get install -y mull-19
+          
       - name: Verify tools and source file
         shell: bash
         run: |
@@ -74,6 +75,7 @@ jobs:
           EOF
           echo "=== Mull configuration ==="
           cat mull-config.yml
+          
       - name: Configure tests for Mull and LLVM coverage
         shell: bash
         env:
@@ -90,12 +92,14 @@ jobs:
             -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
             -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
             -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+            
       - name: Compile unit tests
         shell: bash
         run: |
           set -euo pipefail
           cmake --build build --parallel
           test -x "${TEST_EXECUTABLE}"
+          
       - name: Run all unit tests and generate coverage
         shell: bash
         env:
@@ -116,6 +120,7 @@ jobs:
             all-tests.profraw \
             -o all-tests.profdata
           test -s all-tests.profdata
+          
       - name: Generate readable coverage report
         shell: bash
         run: |
@@ -125,6 +130,7 @@ jobs:
             -instr-profile=all-tests.profdata \
             "${SOURCE_FILE}" \
             | tee source-file-coverage.txt
+            
       - name: Run Mull with all unit tests
         shell: bash
         env:
@@ -146,6 +152,7 @@ jobs:
             ./unit_tests \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/mull-results/mull-console.log"
+            
       - name: Extract surviving mutants
         id: surviving-mutants
         shell: bash
@@ -165,23 +172,44 @@ jobs:
               r"(\d+):(\d+):\d+:\d+\s+->\s+Passed"
           )
           rows = []
+          
           for raw_line in log_file.read_text(
-              encoding="utf-8", errors="replace"
+              encoding="utf-8",
+              errors="replace",
           ).splitlines():
-              match = pattern.search(raw_line)
+              match = pattern.match(raw_line.strip())
+          
               if not match:
                   continue
-              operator, path, line, column = match.groups()
+          
+              path, line, column, description, operator = match.groups()
+          
               if path.replace("\\", "/").endswith(source_file):
                   rows.append(
-                      (line, column, f"Survived mutation {operator}", operator)
+                      (
+                          line,
+                          column,
+                          description,
+                          operator,
+                      )
                   )
-          rows = list(dict.fromkeys(rows))
+          
+          rows.sort(
+              key=lambda row: (
+                  int(row[0]),
+                  int(row[1]),
+                  row[3],
+                  row[2],
+              )
+          )
+          
           with output_file.open("w", encoding="utf-8") as output:
               for row in rows:
                   output.write("\t".join(row) + "\n")
+          
           with Path(os.environ["GITHUB_OUTPUT"]).open(
-              "a", encoding="utf-8"
+              "a",
+              encoding="utf-8",
           ) as output:
               output.write(f"count={len(rows)}\n")
           PY
@@ -214,6 +242,7 @@ jobs:
           ' "${GITHUB_WORKSPACE}/gtest-list.txt" \
             > "${GITHUB_WORKSPACE}/selected-tests.txt"
           test -s "${GITHUB_WORKSPACE}/selected-tests.txt"
+          
       - name: Identify tests covering surviving mutants
         if: steps.surviving-mutants.outputs.count != '0'
         shell: bash
@@ -303,12 +332,14 @@ jobs:
               echo "None"
             fi
           } | tee "${REPORT_FILE}"
+          
       - name: Report no surviving mutants
         if: steps.surviving-mutants.outputs.count == '0'
         shell: bash
         run: |
           echo "No surviving mutant found for ${SOURCE_FILE}." \
             | tee tests-covering-surviving-mutants.txt
+            
       - name: Generate agent mutation context
         if: always()
         shell: bash
@@ -518,6 +549,7 @@ jobs:
               echo "The covering-tests report was not generated."
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+          
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4
