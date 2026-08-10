@@ -1,0 +1,53 @@
+name: Test Aider with OpenRouter
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - quality/generic-mull-workflows
+    paths:
+      - .github/workflows/test-aider-openrouter.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test-aider:
+    name: Test Aider connection without modification
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Aider
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m pip install --user aider-chat
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Check Aider version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aider --version
+
+      - name: Test Aider with OpenRouter
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          aider \
+            --model openrouter/openrouter/free \
+            --message "Analyse rapidement ce dépôt et réponds uniquement : Aider connection successful" \
+            --dry-run \
+            --yes-always \
+            --no-auto-commits \
+            --no-pretty \
+            --no-stream
