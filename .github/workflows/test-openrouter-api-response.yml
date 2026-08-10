@@ -1,0 +1,57 @@
+name: Test OpenRouter API Response
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - quality/generic-mull-workflows
+    paths:
+      - .github/workflows/test-openrouter-api.yml
+
+permissions:
+  contents: read
+
+jobs:
+  test-openrouter:
+    name: Test free AI model
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Call OpenRouter API
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          response=$(
+            curl --fail-with-body \
+              --silent \
+              --show-error \
+              https://openrouter.ai/api/v1/chat/completions \
+              --header "Authorization: Bearer ${OPENROUTER_API_KEY}" \
+              --header "Content-Type: application/json" \
+              --data '{
+                "model": "openrouter/free",
+                "messages": [
+                  {
+                    "role": "user",
+                    "content": "Reply with exactly: OpenRouter connection successful"
+                  }
+                ]
+              }'
+          )
+
+          echo "=== OpenRouter response ==="
+          echo "${response}" | jq .
+          
+          content=$(echo "${response}" | jq -r '.choices[0].message.content // empty')
+          
+          if [ -z "${content}" ]; then
+            echo "No model response received."
+            exit 1
+          fi
+          
+          echo "=== Model response ==="
+          echo "${content}"
