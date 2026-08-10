@@ -3,6 +3,12 @@ name: Test OpenRouter API
 on:
   workflow_dispatch:
 
+  push:
+    branches:
+      - quality/generic-mull-workflows
+    paths:
+      - .github/workflows/test-openrouter-api.yml
+
 permissions:
   contents: read
 
