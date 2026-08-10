@@ -7,7 +7,7 @@ on:
     branches:
       - quality/generic-mull-workflows
     paths:
-      - .github/workflows/test-openrouter-api.yml
+      - .github/workflows/test-openrouter-api-response.yml
 
 permissions:
   contents: read
