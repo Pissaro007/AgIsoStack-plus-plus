@@ -1,0 +1,598 @@
+name: Mull - Single Source File - Enrich Agent Context
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_file:
+        description: "Chemin du fichier source a muter"
+        required: true
+        type: string
+
+  push:
+    branches:
+      - quality/generic-mull-workflows
+    paths:
+      - .github/workflows/mull-single-source-file-enrich-agent-context.yml
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_heartbeat.cpp' }}
+  TEST_EXECUTABLE: build/test/unit_tests
+
+jobs:
+  mutation-testing:
+    name: Mutation testing and agent context - single source file
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 Mull and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-19 \
+            llvm-19 \
+            build-essential \
+            cmake \
+            ninja-build \
+            curl
+
+          curl -1sLf \
+            "https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh" \
+            | sudo -E bash
+
+          sudo apt-get update
+          sudo apt-get install -y mull-19
+
+      - name: Verify tools and source file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang-19 --version
+          llvm-profdata-19 --version
+          llvm-cov-19 --version
+          mull-runner-19 --version
+          test -f /usr/lib/mull-ir-frontend-19
+          test -f "${SOURCE_FILE}"
+
+      - name: Create Mull configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ESCAPED_SOURCE_FILE=$(printf '%s' "${SOURCE_FILE}" | sed 's#[][\\.^$*+?(){}|]#\\&#g')
+
+          cat > mull-config.yml <<EOF
+          includePaths:
+            - '.*${ESCAPED_SOURCE_FILE}$'
+          excludePaths:
+            - '.*googletest.*'
+            - '.*googlemock.*'
+            - '.*gtest.*'
+            - '.*gmock.*'
+          quiet: false
+          EOF
+
+          echo "=== Mull configuration ==="
+          cat mull-config.yml
+
+      - name: Configure tests for Mull and LLVM coverage
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Compile unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build --parallel
+          test -x "${TEST_EXECUTABLE}"
+
+      - name: Run all unit tests and generate coverage
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/all-tests.profraw
+        run: |
+          set -euo pipefail
+
+          rm -f all-tests.profraw all-tests.profdata
+          cd build/test
+
+          ./unit_tests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
+          cd "${GITHUB_WORKSPACE}"
+
+          test -s all-tests.profraw
+
+          llvm-profdata-19 merge \
+            -sparse \
+            all-tests.profraw \
+            -o all-tests.profdata
+
+          test -s all-tests.profdata
+
+      - name: Generate readable coverage report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          llvm-cov-19 show \
+            "${TEST_EXECUTABLE}" \
+            -instr-profile=all-tests.profdata \
+            "${SOURCE_FILE}" \
+            | tee source-file-coverage.txt
+
+      - name: Run Mull with all unit tests
+        shell: bash
+        env:
+          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${GITHUB_WORKSPACE}/mull-results"
+          cd build/test
+
+          mull-runner-19 \
+            --allow-surviving \
+            --debug \
+            --timeout 120000 \
+            --coverage-info "${GITHUB_WORKSPACE}/all-tests.profdata" \
+            --reporters IDE \
+            --reporters Elements \
+            --report-dir "${GITHUB_WORKSPACE}/mull-results" \
+            --report-name single-source-file-all-tests \
+            ./unit_tests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/mull-results/mull-console.log"
+
+      - name: Extract surviving mutants
+        id: surviving-mutants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          source_file = os.environ["SOURCE_FILE"].replace("\\", "/")
+          log_file = Path("mull-results/mull-console.log")
+          output_file = Path("surviving-mutants.tsv")
+          pattern = re.compile(
+              r"\[\d+/\d+\]\s+"
+              r"([^:]+):"
+              r"(.+?):"
+              r"(\d+):(\d+):\d+:\d+\s+->\s+Passed"
+          )
+
+          rows = []
+          for raw_line in log_file.read_text(
+              encoding="utf-8", errors="replace"
+          ).splitlines():
+              match = pattern.search(raw_line)
+              if not match:
+                  continue
+              operator, path, line, column = match.groups()
+              if path.replace("\\", "/").endswith(source_file):
+                  rows.append(
+                      (line, column, f"Survived mutation {operator}", operator)
+                  )
+
+          rows = list(dict.fromkeys(rows))
+
+          with output_file.open("w", encoding="utf-8") as output:
+              for row in rows:
+                  output.write("\t".join(row) + "\n")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open(
+              "a", encoding="utf-8"
+          ) as output:
+              output.write(f"count={len(rows)}\n")
+          PY
+
+          echo "=== Surviving mutants ==="
+          cat surviving-mutants.tsv
+
+      - name: List unit tests
+        if: steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/test
+
+          ./unit_tests \
+            --gtest_list_tests \
+            --gtest_color=no \
+            > "${GITHUB_WORKSPACE}/gtest-list.txt"
+
+          awk '
+            /^[^[:space:]]/ {
+              suite = $1
+              sub(/\.$/, "", suite)
+              next
+            }
+            /^[[:space:]]+/ {
+              test = $1
+              sub(/#.*/, "", test)
+              if (suite != "" && test != "") {
+                print suite "." test
+              }
+            }
+          ' "${GITHUB_WORKSPACE}/gtest-list.txt" \
+            > "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+          test -s "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+      - name: Identify tests covering surviving mutants
+        if: steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_FILE_ABS="${GITHUB_WORKSPACE}/${SOURCE_FILE}"
+          TEST_EXECUTABLE_ABS="${GITHUB_WORKSPACE}/${TEST_EXECUTABLE}"
+          RESULTS_DIR="${GITHUB_WORKSPACE}/per-test-coverage"
+          REPORT_FILE="${GITHUB_WORKSPACE}/tests-covering-surviving-mutants.txt"
+          FAILED_FILE="${GITHUB_WORKSPACE}/tests-not-analysed.txt"
+
+          mkdir -p "${RESULTS_DIR}"
+          : > "${FAILED_FILE}"
+
+          TARGET_LINES=$(cut -f1 surviving-mutants.tsv | sort -n -u | tr '\n' ' ')
+          for line in ${TARGET_LINES}; do
+            : > "${RESULTS_DIR}/line-${line}-tests.txt"
+          done
+
+          index=0
+          while IFS= read -r test_name; do
+            index=$((index + 1))
+            profile_raw="${RESULTS_DIR}/test-${index}.profraw"
+            profile_data="${RESULTS_DIR}/test-${index}.profdata"
+            coverage_text="${RESULTS_DIR}/test-${index}.txt"
+
+            echo "[${index}] ${test_name}"
+
+            if ! (
+              cd "${GITHUB_WORKSPACE}/build/test"
+              LLVM_PROFILE_FILE="${profile_raw}" \
+                ./unit_tests \
+                  --gtest_filter="${test_name}" \
+                  --gtest_color=no \
+                  > /dev/null 2>&1
+              ); then
+              echo "${test_name}" >> "${FAILED_FILE}"
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            if [ ! -s "${profile_raw}" ]; then
+              echo "${test_name}" >> "${FAILED_FILE}"
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            llvm-profdata-19 merge -sparse "${profile_raw}" -o "${profile_data}"
+
+            llvm-cov-19 show \
+              "${TEST_EXECUTABLE_ABS}" \
+              -instr-profile="${profile_data}" \
+              "${SOURCE_FILE_ABS}" \
+              > "${coverage_text}"
+
+            for target_line in ${TARGET_LINES}; do
+              if awk -F'|' -v target_line="${target_line}" '
+                {
+                  line = $1
+                  count = $2
+                  gsub(/[[:space:]]/, "", line)
+                  gsub(/[[:space:]]/, "", count)
+                  if (line == target_line && count != "" && count != "0") {
+                    found = 1
+                  }
+                }
+                END { exit(found ? 0 : 1) }
+              ' "${coverage_text}"; then
+                echo "${test_name}" >> "${RESULTS_DIR}/line-${target_line}-tests.txt"
+              fi
+            done
+
+            rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+          done < "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+          for line in ${TARGET_LINES}; do
+            sort -u "${RESULTS_DIR}/line-${line}-tests.txt" \
+              -o "${RESULTS_DIR}/line-${line}-tests.txt"
+          done
+
+          {
+            echo "Surviving mutants in ${SOURCE_FILE}"
+            echo
+            while IFS=$'\t' read -r line column description operator; do
+              echo "Line ${line}, column ${column}"
+              echo "Mutant: ${description} [${operator}]"
+              echo "Tests covering line ${line}:"
+              if [ -s "${RESULTS_DIR}/line-${line}-tests.txt" ]; then
+                cat "${RESULTS_DIR}/line-${line}-tests.txt"
+              else
+                echo "No individual test found"
+              fi
+              echo
+            done < surviving-mutants.tsv
+
+            echo "Tests not analysed successfully"
+            if [ -s "${FAILED_FILE}" ]; then
+              cat "${FAILED_FILE}"
+            else
+              echo "None"
+            fi
+          } | tee "${REPORT_FILE}"
+
+      - name: Report no surviving mutants
+        if: steps.surviving-mutants.outputs.count == '0'
+        shell: bash
+        run: |
+          echo "No surviving mutant found for ${SOURCE_FILE}." \
+            | tee tests-covering-surviving-mutants.txt
+
+      - name: Locate covering test source code
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+
+          mutants_file = Path("surviving-mutants.tsv")
+          coverage_directory = Path("per-test-coverage")
+          output_file = Path("covering-test-sources.json")
+          supported_extensions = {".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx"}
+
+          def read_non_empty_lines(path):
+              if not path.is_file():
+                  return []
+              return [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+
+          def get_covering_test_names():
+              if not mutants_file.is_file():
+                  return []
+              names = set()
+              for raw_line in mutants_file.read_text(encoding="utf-8", errors="replace").splitlines():
+                  if not raw_line.strip():
+                      continue
+                  fields = raw_line.split("\t", maxsplit=3)
+                  if len(fields) != 4:
+                      continue
+                  names.update(read_non_empty_lines(coverage_directory / f"line-{fields[0]}-tests.txt"))
+              return sorted(names)
+
+          def get_repository_files():
+              result = subprocess.run(["git", "ls-files"], check=True, capture_output=True, text=True)
+              return [Path(item) for item in result.stdout.splitlines() if Path(item).suffix.lower() in supported_extensions and Path(item).is_file()]
+
+          def find_closing_brace(text, opening_position):
+              depth = 0
+              index = opening_position
+              state = "code"
+              while index < len(text):
+                  ch = text[index]
+                  nxt = text[index + 1] if index + 1 < len(text) else ""
+                  if state == "code":
+                      if ch == "/" and nxt == "/": state = "line_comment"; index += 2; continue
+                      if ch == "/" and nxt == "*": state = "block_comment"; index += 2; continue
+                      if ch == '"': state = "string"; index += 1; continue
+                      if ch == "'": state = "character"; index += 1; continue
+                      if ch == "{": depth += 1
+                      elif ch == "}":
+                          depth -= 1
+                          if depth == 0: return index
+                  elif state == "line_comment" and ch == "\n": state = "code"
+                  elif state == "block_comment" and ch == "*" and nxt == "/": state = "code"; index += 2; continue
+                  elif state in {"string", "character"}:
+                      if ch == "\\": index += 2; continue
+                      if (state == "string" and ch == '"') or (state == "character" and ch == "'"): state = "code"
+                  index += 1
+              return None
+
+          def locate_test(test_name, files):
+              if "." not in test_name:
+                  return {"name": test_name, "status": "unresolved", "reason": "Invalid GoogleTest name", "matches": []}
+              suite, case = test_name.split(".", 1)
+              pattern = re.compile(r"\b(TEST|TEST_F|TEST_P)\s*\(\s*" + re.escape(suite) + r"\s*,\s*" + re.escape(case) + r"\s*\)", re.MULTILINE)
+              matches = []
+              for path in files:
+                  text = path.read_text(encoding="utf-8", errors="replace")
+                  for found in pattern.finditer(text):
+                      opening = text.find("{", found.end())
+                      if opening == -1: continue
+                      closing = find_closing_brace(text, opening)
+                      if closing is None: continue
+                      matches.append({
+                          "macro": found.group(1),
+                          "source_file": path.as_posix(),
+                          "start_line": text.count("\n", 0, found.start()) + 1,
+                          "end_line": text.count("\n", 0, closing) + 1,
+                          "content": text[found.start():closing + 1],
+                      })
+              status = "resolved" if len(matches) == 1 else "ambiguous" if matches else "unresolved"
+              reason = None if status == "resolved" else "Several matching test definitions found" if status == "ambiguous" else "No matching TEST, TEST_F or TEST_P definition found"
+              return {"name": test_name, "status": status, "reason": reason, "matches": matches}
+
+          files = get_repository_files()
+          tests = {name: locate_test(name, files) for name in get_covering_test_names()}
+          report = {
+              "test_count": len(tests),
+              "resolved_count": sum(value["status"] == "resolved" for value in tests.values()),
+              "ambiguous_count": sum(value["status"] == "ambiguous" for value in tests.values()),
+              "unresolved_count": sum(value["status"] == "unresolved" for value in tests.values()),
+              "tests": tests,
+          }
+          output_file.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print(f"Covering test source lookup: {report['resolved_count']} resolved, {report['ambiguous_count']} ambiguous, {report['unresolved_count']} unresolved.")
+          PY
+
+          echo "=== Covering test sources ==="
+          python3 -m json.tool covering-test-sources.json
+
+      - name: Generate agent mutation context
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          source_file = Path(os.environ["SOURCE_FILE"])
+          mutants_file = Path("surviving-mutants.tsv")
+          failed_tests_file = Path("tests-not-analysed.txt")
+          coverage_directory = Path("per-test-coverage")
+          test_sources_file = Path("covering-test-sources.json")
+          output_file = Path("agent-mutation-context.json")
+          context_radius = 5
+
+          if not source_file.is_file():
+              raise FileNotFoundError(f"Source file not found: {source_file}")
+
+          source_lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+
+          def read_non_empty_lines(path):
+              if not path.is_file():
+                  return []
+              return [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+
+          if test_sources_file.is_file():
+              test_sources_report = json.loads(test_sources_file.read_text(encoding="utf-8", errors="replace"))
+          else:
+              test_sources_report = {"test_count": 0, "resolved_count": 0, "ambiguous_count": 0, "unresolved_count": 0, "tests": {}}
+          test_sources_catalog = test_sources_report.get("tests", {})
+
+          def create_source_context(target_line):
+              if target_line < 1 or target_line > len(source_lines):
+                  return {"start_line": None, "end_line": None, "code": []}
+              start_line = max(1, target_line - context_radius)
+              end_line = min(len(source_lines), target_line + context_radius)
+              return {
+                  "start_line": start_line,
+                  "end_line": end_line,
+                  "code": [{"line": number, "is_mutated_line": number == target_line, "content": source_lines[number - 1]} for number in range(start_line, end_line + 1)],
+              }
+
+          mutants = []
+          if mutants_file.is_file():
+              for input_line_number, raw_line in enumerate(mutants_file.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+                  if not raw_line.strip():
+                      continue
+                  fields = raw_line.split("\t", maxsplit=3)
+                  if len(fields) != 4:
+                      raise ValueError(f"Invalid surviving mutant entry at line {input_line_number}: {raw_line!r}")
+                  line_text, column_text, description, operator = fields
+                  line_number = int(line_text)
+                  column_number = int(column_text)
+                  covering_tests = sorted(set(read_non_empty_lines(coverage_directory / f"line-{line_number}-tests.txt")))
+                  contexts = [test_sources_catalog.get(name, {"name": name, "status": "unresolved", "reason": "Test not found in covering test source catalog", "matches": []}) for name in covering_tests]
+                  mutants.append({
+                      "id": f"mutant-{len(mutants) + 1}",
+                      "location": {"file": source_file.as_posix(), "line": line_number, "column": column_number},
+                      "description": description,
+                      "operator": operator,
+                      "covering_tests": covering_tests,
+                      "covering_test_count": len(covering_tests),
+                      "covering_test_contexts": contexts,
+                      "source_context": create_source_context(line_number),
+                  })
+
+          tests_not_analysed = sorted(set(read_non_empty_lines(failed_tests_file)))
+          report = {
+              "schema_version": "1.1",
+              "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+              "execution": {
+                  "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+                  "ref": os.environ.get("GITHUB_REF", ""),
+                  "sha": os.environ.get("GITHUB_SHA", ""),
+                  "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+                  "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+                  "run_number": os.environ.get("GITHUB_RUN_NUMBER", ""),
+                  "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+              },
+              "mutation_campaign": {
+                  "source_file": source_file.as_posix(),
+                  "test_executable": os.environ.get("TEST_EXECUTABLE", ""),
+                  "surviving_mutant_count": len(mutants),
+                  "tests_not_analysed_count": len(tests_not_analysed),
+              },
+              "test_source_lookup": {key: test_sources_report.get(key, 0) for key in ("test_count", "resolved_count", "ambiguous_count", "unresolved_count")},
+              "mutants": mutants,
+              "tests_not_analysed": tests_not_analysed,
+          }
+          output_file.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print(f"Generated {output_file} with {len(mutants)} surviving mutant(s).")
+          PY
+
+          echo "=== Agent mutation context ==="
+          python3 -m json.tool agent-mutation-context.json
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Mull and covering tests"
+            echo
+            echo '```text'
+            cat tests-covering-surviving-mutants.txt 2>/dev/null || \
+              echo "The covering-tests report was not generated."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mull-single-source-file-enriched-agent-context
+          path: |
+            mull-results/
+            mull-config.yml
+            all-tests-baseline.log
+            all-tests.profdata
+            source-file-coverage.txt
+            surviving-mutants.tsv
+            tests-covering-surviving-mutants.txt
+            tests-not-analysed.txt
+            selected-tests.txt
+            gtest-list.txt
+            per-test-coverage/line-*-tests.txt
+            covering-test-sources.json
+            agent-mutation-context.json
+          if-no-files-found: warn
+          retention-days: 30
