@@ -1016,7 +1016,7 @@ jobs:
 
           aider \
             --model openrouter/nvidia/nemotron-3-ultra-550b-a55b:free \
-            --chat-mode code \
+            --edit-format diff \
             --read agent-mutation-context.json \
             --read isobus/src/isobus_heartbeat.cpp \
             --file test/heartbeat_tests.cpp \
