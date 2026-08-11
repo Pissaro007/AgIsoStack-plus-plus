@@ -1026,6 +1026,9 @@ jobs:
             --no-check-update \
             --no-show-release-notes \
             --analytics-disable \
+            --chat-history-file "${RUNNER_TEMP}/aider.chat.history.md" \
+            --input-history-file "${RUNNER_TEMP}/aider.input.history" \
+            --llm-history-file "${RUNNER_TEMP}/aider.llm.history" \
             --no-auto-commits \
             --no-dirty-commits \
             --no-pretty \
@@ -1048,17 +1051,11 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t changed_files < <(
-            git status --short --untracked-files=all \
-              | sed -E 's/^.. //' \
-              | grep -v -E '^(agent-mutation-context\.json|aider-mutant-108-edit\.txt|baseline-test-count\.txt)$' \
-              || true
-          )
-
-          if [ "${#changed_files[@]}" -ne 1 ] || \
-             [ "${changed_files[0]}" != "test/heartbeat_tests.cpp" ]; then
-            echo "Unexpected changed files:" >&2
-            printf '%s\n' "${changed_files[@]}" >&2
+          if ! git diff --quiet -- \
+            ':(exclude)test/heartbeat_tests.cpp'; then
+            echo "Aider modified a tracked file other than test/heartbeat_tests.cpp." >&2
+            git diff -- \
+              ':(exclude)test/heartbeat_tests.cpp' >&2
             exit 1
           fi
 
