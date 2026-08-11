@@ -1,6 +1,6 @@
 name: Mull - Single Source File - All Tests and Covering Tests
 
-#re run #1
+#re run #2
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ on:
 
   push:
     branches:
-      - quality/generic-mull-workflows
+      - quality/mull-isobus-heartbeat
     paths:
       - .github/workflows/mull-single-source-file-and-identify-covering-tests.yml
 
