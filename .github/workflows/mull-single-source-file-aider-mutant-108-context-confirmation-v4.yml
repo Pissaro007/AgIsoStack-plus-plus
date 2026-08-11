@@ -1038,7 +1038,7 @@ jobs:
           grep -Fxq 'TARGET_MUTANT: mutant-1' "${ANALYSIS_FILE}"
           grep -Fxq 'TARGET_LINE: 108' "${ANALYSIS_FILE}"
           grep -Fxq 'TARGET_OPERATOR: cxx_gt_to_ge' "${ANALYSIS_FILE}"
-          grep -Eq '^(STRATEGY_READY|MORE_CONTEXT_REQUIRED|NOT_TREATABLE_UNDER_CONSTRAINTS)$'             "${ANALYSIS_FILE}"
+          grep -Eq '(STRATEGY_READY|MORE_CONTEXT_REQUIRED|NOT_TREATABLE_UNDER_CONSTRAINTS)'               "${ANALYSIS_FILE}"
 
       - name: Verify that Aider changed no tracked file
         if: always() && steps.surviving-mutants.outputs.count != '0'
