@@ -1,0 +1,1094 @@
+name: Mull - Single Source File - Analyze Mutant 108 Strategy with Aider
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_file:
+        description: "Chemin du fichier source a muter"
+        required: true
+        type: string
+
+  push:
+    branches:
+      - quality/generic-mull-workflows
+    paths:
+      - .github/workflows/mull-single-source-file-aider-mutant-108-strategy-v3.yml
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_heartbeat.cpp' }}
+  TEST_EXECUTABLE: build/test/unit_tests
+
+jobs:
+  mutation-testing:
+    name: Mutation testing and read-only strategy for mutant line 108
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 Mull and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-19 \
+            llvm-19 \
+            build-essential \
+            cmake \
+            ninja-build \
+            curl
+
+          curl -1sLf \
+            "https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh" \
+            | sudo -E bash
+
+          sudo apt-get update
+          sudo apt-get install -y mull-19
+
+      - name: Verify tools and source file
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang-19 --version
+          llvm-profdata-19 --version
+          llvm-cov-19 --version
+          mull-runner-19 --version
+          test -f /usr/lib/mull-ir-frontend-19
+          test -f "${SOURCE_FILE}"
+
+      - name: Create Mull configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ESCAPED_SOURCE_FILE=$(printf '%s' "${SOURCE_FILE}" | sed 's#[][\\.^$*+?(){}|]#\\&#g')
+
+          cat > mull-config.yml <<EOF
+          includePaths:
+            - '.*${ESCAPED_SOURCE_FILE}$'
+          excludePaths:
+            - '.*googletest.*'
+            - '.*googlemock.*'
+            - '.*gtest.*'
+            - '.*gmock.*'
+          quiet: false
+          EOF
+
+          echo "=== Mull configuration ==="
+          cat mull-config.yml
+
+      - name: Configure tests for Mull and LLVM coverage
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Compile unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build --parallel
+          test -x "${TEST_EXECUTABLE}"
+
+      - name: Run all unit tests and generate coverage
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/all-tests.profraw
+        run: |
+          set -euo pipefail
+
+          rm -f all-tests.profraw all-tests.profdata
+          cd build/test
+
+          ./unit_tests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
+          cd "${GITHUB_WORKSPACE}"
+
+          test -s all-tests.profraw
+
+          llvm-profdata-19 merge \
+            -sparse \
+            all-tests.profraw \
+            -o all-tests.profdata
+
+          test -s all-tests.profdata
+
+      - name: Generate readable coverage report
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          llvm-cov-19 show \
+            "${TEST_EXECUTABLE}" \
+            -instr-profile=all-tests.profdata \
+            "${SOURCE_FILE}" \
+            | tee source-file-coverage.txt
+
+      - name: Run Mull with all unit tests
+        shell: bash
+        env:
+          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${GITHUB_WORKSPACE}/mull-results"
+          cd build/test
+
+          mull-runner-19 \
+            --allow-surviving \
+            --debug \
+            --timeout 120000 \
+            --coverage-info "${GITHUB_WORKSPACE}/all-tests.profdata" \
+            --reporters IDE \
+            --reporters Elements \
+            --report-dir "${GITHUB_WORKSPACE}/mull-results" \
+            --report-name single-source-file-all-tests \
+            ./unit_tests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/mull-results/mull-console.log"
+
+      - name: Extract surviving mutants
+        id: surviving-mutants
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          source_file = os.environ["SOURCE_FILE"].replace("\\", "/")
+          log_file = Path("mull-results/mull-console.log")
+          output_file = Path("surviving-mutants.tsv")
+          pattern = re.compile(
+              r"\[\d+/\d+\]\s+"
+              r"([^:]+):"
+              r"(.+?):"
+              r"(\d+):(\d+):\d+:\d+\s+->\s+Passed"
+          )
+
+          rows = []
+          for raw_line in log_file.read_text(
+              encoding="utf-8", errors="replace"
+          ).splitlines():
+              match = pattern.search(raw_line)
+              if not match:
+                  continue
+              operator, path, line, column = match.groups()
+              if path.replace("\\", "/").endswith(source_file):
+                  rows.append(
+                      (line, column, f"Survived mutation {operator}", operator)
+                  )
+
+          rows = list(dict.fromkeys(rows))
+
+          with output_file.open("w", encoding="utf-8") as output:
+              for row in rows:
+                  output.write("\t".join(row) + "\n")
+
+          with Path(os.environ["GITHUB_OUTPUT"]).open(
+              "a", encoding="utf-8"
+          ) as output:
+              output.write(f"count={len(rows)}\n")
+          PY
+
+          echo "=== Surviving mutants ==="
+          cat surviving-mutants.tsv
+
+      - name: List unit tests
+        if: steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/test
+
+          ./unit_tests \
+            --gtest_list_tests \
+            --gtest_color=no \
+            > "${GITHUB_WORKSPACE}/gtest-list.txt"
+
+          awk '
+            /^[^[:space:]]/ {
+              suite = $1
+              sub(/\.$/, "", suite)
+              next
+            }
+            /^[[:space:]]+/ {
+              test = $1
+              sub(/#.*/, "", test)
+              if (suite != "" && test != "") {
+                print suite "." test
+              }
+            }
+          ' "${GITHUB_WORKSPACE}/gtest-list.txt" \
+            > "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+          test -s "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+      - name: Identify tests covering surviving mutants
+        if: steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SOURCE_FILE_ABS="${GITHUB_WORKSPACE}/${SOURCE_FILE}"
+          TEST_EXECUTABLE_ABS="${GITHUB_WORKSPACE}/${TEST_EXECUTABLE}"
+          RESULTS_DIR="${GITHUB_WORKSPACE}/per-test-coverage"
+          REPORT_FILE="${GITHUB_WORKSPACE}/tests-covering-surviving-mutants.txt"
+          FAILED_FILE="${GITHUB_WORKSPACE}/tests-not-analysed.txt"
+
+          mkdir -p "${RESULTS_DIR}"
+          : > "${FAILED_FILE}"
+
+          TARGET_LINES=$(cut -f1 surviving-mutants.tsv | sort -n -u | tr '\n' ' ')
+          for line in ${TARGET_LINES}; do
+            : > "${RESULTS_DIR}/line-${line}-tests.txt"
+          done
+
+          index=0
+          while IFS= read -r test_name; do
+            index=$((index + 1))
+            profile_raw="${RESULTS_DIR}/test-${index}.profraw"
+            profile_data="${RESULTS_DIR}/test-${index}.profdata"
+            coverage_text="${RESULTS_DIR}/test-${index}.txt"
+
+            echo "[${index}] ${test_name}"
+
+            if ! (
+              cd "${GITHUB_WORKSPACE}/build/test"
+              LLVM_PROFILE_FILE="${profile_raw}" \
+                ./unit_tests \
+                  --gtest_filter="${test_name}" \
+                  --gtest_color=no \
+                  > /dev/null 2>&1
+              ); then
+              echo "${test_name}" >> "${FAILED_FILE}"
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            if [ ! -s "${profile_raw}" ]; then
+              echo "${test_name}" >> "${FAILED_FILE}"
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            llvm-profdata-19 merge -sparse "${profile_raw}" -o "${profile_data}"
+
+            llvm-cov-19 show \
+              "${TEST_EXECUTABLE_ABS}" \
+              -instr-profile="${profile_data}" \
+              "${SOURCE_FILE_ABS}" \
+              > "${coverage_text}"
+
+            for target_line in ${TARGET_LINES}; do
+              if awk -F'|' -v target_line="${target_line}" '
+                {
+                  line = $1
+                  count = $2
+                  gsub(/[[:space:]]/, "", line)
+                  gsub(/[[:space:]]/, "", count)
+                  if (line == target_line && count != "" && count != "0") {
+                    found = 1
+                  }
+                }
+                END { exit(found ? 0 : 1) }
+              ' "${coverage_text}"; then
+                echo "${test_name}" >> "${RESULTS_DIR}/line-${target_line}-tests.txt"
+              fi
+            done
+
+            rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+          done < "${GITHUB_WORKSPACE}/selected-tests.txt"
+
+          for line in ${TARGET_LINES}; do
+            sort -u "${RESULTS_DIR}/line-${line}-tests.txt" \
+              -o "${RESULTS_DIR}/line-${line}-tests.txt"
+          done
+
+          {
+            echo "Surviving mutants in ${SOURCE_FILE}"
+            echo
+            while IFS=$'\t' read -r line column description operator; do
+              echo "Line ${line}, column ${column}"
+              echo "Mutant: ${description} [${operator}]"
+              echo "Tests covering line ${line}:"
+              if [ -s "${RESULTS_DIR}/line-${line}-tests.txt" ]; then
+                cat "${RESULTS_DIR}/line-${line}-tests.txt"
+              else
+                echo "No individual test found"
+              fi
+              echo
+            done < surviving-mutants.tsv
+
+            echo "Tests not analysed successfully"
+            if [ -s "${FAILED_FILE}" ]; then
+              cat "${FAILED_FILE}"
+            else
+              echo "None"
+            fi
+          } | tee "${REPORT_FILE}"
+
+      - name: Report no surviving mutants
+        if: steps.surviving-mutants.outputs.count == '0'
+        shell: bash
+        run: |
+          echo "No surviving mutant found for ${SOURCE_FILE}." \
+            | tee tests-covering-surviving-mutants.txt
+
+      - name: Locate covering test and fixture inheritance source code
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import re
+          import subprocess
+          from pathlib import Path
+
+          mutants_file = Path("surviving-mutants.tsv")
+          coverage_directory = Path("per-test-coverage")
+          output_file = Path("covering-test-sources.json")
+          supported_extensions = {
+              ".c", ".cc", ".cpp", ".cxx",
+              ".h", ".hh", ".hpp", ".hxx",
+          }
+          max_inheritance_depth = 8
+
+          def read_non_empty_lines(path):
+              if not path.is_file():
+                  return []
+              return [
+                  line.strip()
+                  for line in path.read_text(
+                      encoding="utf-8",
+                      errors="replace",
+                  ).splitlines()
+                  if line.strip()
+              ]
+
+          def get_covering_test_names():
+              if not mutants_file.is_file():
+                  return []
+              names = set()
+              for raw_line in mutants_file.read_text(
+                  encoding="utf-8",
+                  errors="replace",
+              ).splitlines():
+                  if not raw_line.strip():
+                      continue
+                  fields = raw_line.split("\t", maxsplit=3)
+                  if len(fields) != 4:
+                      continue
+                  names.update(
+                      read_non_empty_lines(
+                          coverage_directory
+                          / f"line-{fields[0]}-tests.txt"
+                      )
+                  )
+              return sorted(names)
+
+          def get_repository_files():
+              result = subprocess.run(
+                  ["git", "ls-files"],
+                  check=True,
+                  capture_output=True,
+                  text=True,
+              )
+              return [
+                  Path(item)
+                  for item in result.stdout.splitlines()
+                  if Path(item).suffix.lower() in supported_extensions
+                  and Path(item).is_file()
+              ]
+
+          def find_closing_brace(text, opening_position):
+              depth = 0
+              index = opening_position
+              state = "code"
+              while index < len(text):
+                  character = text[index]
+                  next_character = (
+                      text[index + 1]
+                      if index + 1 < len(text)
+                      else ""
+                  )
+                  if state == "code":
+                      if character == "/" and next_character == "/":
+                          state = "line_comment"
+                          index += 2
+                          continue
+                      if character == "/" and next_character == "*":
+                          state = "block_comment"
+                          index += 2
+                          continue
+                      if character == '"':
+                          state = "string"
+                          index += 1
+                          continue
+                      if character == "'":
+                          state = "character"
+                          index += 1
+                          continue
+                      if character == "{":
+                          depth += 1
+                      elif character == "}":
+                          depth -= 1
+                          if depth == 0:
+                              return index
+                  elif state == "line_comment":
+                      if character == "\n":
+                          state = "code"
+                  elif state == "block_comment":
+                      if character == "*" and next_character == "/":
+                          state = "code"
+                          index += 2
+                          continue
+                  elif state in {"string", "character"}:
+                      if character == "\\":
+                          index += 2
+                          continue
+                      if (
+                          state == "string" and character == '"'
+                      ) or (
+                          state == "character" and character == "'"
+                      ):
+                          state = "code"
+                  index += 1
+              return None
+
+          def finish_class_definition(text, closing_position):
+              end_position = closing_position + 1
+              while (
+                  end_position < len(text)
+                  and text[end_position].isspace()
+              ):
+                  end_position += 1
+              if (
+                  end_position < len(text)
+                  and text[end_position] == ";"
+              ):
+                  end_position += 1
+              return end_position
+
+          def normalize_base_name(base_specification):
+              base_name = re.sub(
+                  r"\b(public|protected|private|virtual)\b",
+                  " ",
+                  base_specification,
+              )
+              base_name = re.sub(r"\s+", " ", base_name).strip()
+              if "<" in base_name:
+                  base_name = base_name.split("<", 1)[0].strip()
+              return base_name.split("::")[-1].strip()
+
+          def build_class_index(files):
+              class_pattern = re.compile(
+                  r"\b(class|struct)\s+"
+                  r"([A-Za-z_][A-Za-z0-9_]*)"
+                  r"\s*(?::\s*([^\{]+))?\s*\{",
+                  re.MULTILINE,
+              )
+              index = {}
+              for path in files:
+                  content = path.read_text(
+                      encoding="utf-8",
+                      errors="replace",
+                  )
+                  for match in class_pattern.finditer(content):
+                      opening = content.find(
+                          "{", match.start(), match.end()
+                      )
+                      if opening == -1:
+                          continue
+                      closing = find_closing_brace(content, opening)
+                      if closing is None:
+                          continue
+                      end_position = finish_class_definition(
+                          content, closing
+                      )
+                      bases = []
+                      if match.group(3):
+                          bases = [
+                              name
+                              for name in (
+                                  normalize_base_name(item)
+                                  for item in match.group(3).split(",")
+                              )
+                              if name
+                          ]
+                      definition = {
+                          "name": match.group(2),
+                          "kind": match.group(1),
+                          "source_file": path.as_posix(),
+                          "start_line": content.count(
+                              "\n", 0, match.start()
+                          ) + 1,
+                          "end_line": content.count(
+                              "\n", 0, end_position - 1
+                          ) + 1,
+                          "direct_bases": bases,
+                          "content": content[
+                              match.start():end_position
+                          ],
+                      }
+                      index.setdefault(
+                          match.group(2), []
+                      ).append(definition)
+              return index
+
+          def resolve_class_hierarchy(
+              class_name,
+              class_index,
+              visited=None,
+              depth=0,
+          ):
+              visited = set() if visited is None else set(visited)
+              if class_name in visited:
+                  return {
+                      "name": class_name,
+                      "status": "cycle",
+                      "reason": "Inheritance cycle detected",
+                      "matches": [],
+                  }
+              if depth > max_inheritance_depth:
+                  return {
+                      "name": class_name,
+                      "status": "max_depth_reached",
+                      "reason": (
+                          "Maximum inheritance depth reached"
+                      ),
+                      "matches": [],
+                  }
+
+              definitions = class_index.get(class_name, [])
+              if not definitions:
+                  return {
+                      "name": class_name,
+                      "status": "unresolved",
+                      "reason": (
+                          "No matching class or struct found "
+                          "in repository files"
+                      ),
+                      "matches": [],
+                  }
+
+              next_visited = visited | {class_name}
+              enriched_matches = []
+              for definition in definitions:
+                  enriched = dict(definition)
+                  enriched["base_classes"] = [
+                      resolve_class_hierarchy(
+                          base_name,
+                          class_index,
+                          next_visited,
+                          depth + 1,
+                      )
+                      for base_name in definition["direct_bases"]
+                  ]
+                  enriched_matches.append(enriched)
+
+              status = (
+                  "resolved"
+                  if len(enriched_matches) == 1
+                  else "ambiguous"
+              )
+              reason = (
+                  None
+                  if status == "resolved"
+                  else "Several matching class definitions found"
+              )
+              return {
+                  "name": class_name,
+                  "status": status,
+                  "reason": reason,
+                  "matches": enriched_matches,
+              }
+
+          def locate_test(test_name, files, class_index):
+              if "." not in test_name:
+                  return {
+                      "name": test_name,
+                      "status": "unresolved",
+                      "reason": "Invalid GoogleTest name",
+                      "matches": [],
+                  }
+              suite, case = test_name.split(".", 1)
+              pattern = re.compile(
+                  r"\b(TEST|TEST_F|TEST_P)\s*\(\s*"
+                  + re.escape(suite)
+                  + r"\s*,\s*"
+                  + re.escape(case)
+                  + r"\s*\)",
+                  re.MULTILINE,
+              )
+              matches = []
+              for path in files:
+                  content = path.read_text(
+                      encoding="utf-8",
+                      errors="replace",
+                  )
+                  for found in pattern.finditer(content):
+                      opening = content.find("{", found.end())
+                      if opening == -1:
+                          continue
+                      closing = find_closing_brace(
+                          content, opening
+                      )
+                      if closing is None:
+                          continue
+                      macro = found.group(1)
+                      fixture_context = None
+                      if macro in {"TEST_F", "TEST_P"}:
+                          fixture_context = resolve_class_hierarchy(
+                              suite,
+                              class_index,
+                          )
+                      matches.append({
+                          "macro": macro,
+                          "source_file": path.as_posix(),
+                          "start_line": content.count(
+                              "\n", 0, found.start()
+                          ) + 1,
+                          "end_line": content.count(
+                              "\n", 0, closing
+                          ) + 1,
+                          "content": content[
+                              found.start():closing + 1
+                          ],
+                          "fixture_context": fixture_context,
+                      })
+              status = (
+                  "resolved"
+                  if len(matches) == 1
+                  else "ambiguous"
+                  if matches
+                  else "unresolved"
+              )
+              reason = (
+                  None
+                  if status == "resolved"
+                  else "Several matching test definitions found"
+                  if status == "ambiguous"
+                  else (
+                      "No matching TEST, TEST_F or "
+                      "TEST_P definition found"
+                  )
+              )
+              return {
+                  "name": test_name,
+                  "status": status,
+                  "reason": reason,
+                  "matches": matches,
+              }
+
+          def collect_hierarchy_nodes(context):
+              nodes = []
+              if not context:
+                  return nodes
+              nodes.append(context)
+              for match in context.get("matches", []):
+                  for base_context in match.get(
+                      "base_classes", []
+                  ):
+                      nodes.extend(
+                          collect_hierarchy_nodes(base_context)
+                      )
+              return nodes
+
+          files = get_repository_files()
+          class_index = build_class_index(files)
+          tests = {
+              name: locate_test(name, files, class_index)
+              for name in get_covering_test_names()
+          }
+          fixture_contexts = [
+              match["fixture_context"]
+              for test in tests.values()
+              for match in test.get("matches", [])
+              if match.get("fixture_context") is not None
+          ]
+          hierarchy_nodes = [
+              node
+              for context in fixture_contexts
+              for node in collect_hierarchy_nodes(context)
+          ]
+          base_nodes = [
+              node
+              for node in hierarchy_nodes
+              if node.get("name")
+              not in {
+                  context.get("name")
+                  for context in fixture_contexts
+              }
+          ]
+
+          report = {
+              "test_count": len(tests),
+              "resolved_count": sum(
+                  value["status"] == "resolved"
+                  for value in tests.values()
+              ),
+              "ambiguous_count": sum(
+                  value["status"] == "ambiguous"
+                  for value in tests.values()
+              ),
+              "unresolved_count": sum(
+                  value["status"] == "unresolved"
+                  for value in tests.values()
+              ),
+              "fixture_count": len(fixture_contexts),
+              "resolved_fixture_count": sum(
+                  value["status"] == "resolved"
+                  for value in fixture_contexts
+              ),
+              "ambiguous_fixture_count": sum(
+                  value["status"] == "ambiguous"
+                  for value in fixture_contexts
+              ),
+              "unresolved_fixture_count": sum(
+                  value["status"] == "unresolved"
+                  for value in fixture_contexts
+              ),
+              "base_class_count": len(base_nodes),
+              "resolved_base_class_count": sum(
+                  value["status"] == "resolved"
+                  for value in base_nodes
+              ),
+              "ambiguous_base_class_count": sum(
+                  value["status"] == "ambiguous"
+                  for value in base_nodes
+              ),
+              "unresolved_base_class_count": sum(
+                  value["status"] == "unresolved"
+                  for value in base_nodes
+              ),
+              "tests": tests,
+          }
+          output_file.write_text(
+              json.dumps(
+                  report,
+                  indent=2,
+                  ensure_ascii=False,
+              ) + "\n",
+              encoding="utf-8",
+          )
+          print(
+              "Covering test source lookup: "
+              f"{report['resolved_count']} resolved, "
+              f"{report['ambiguous_count']} ambiguous, "
+              f"{report['unresolved_count']} unresolved."
+          )
+          print(
+              "Fixture source lookup: "
+              f"{report['resolved_fixture_count']} resolved, "
+              f"{report['ambiguous_fixture_count']} ambiguous, "
+              f"{report['unresolved_fixture_count']} unresolved."
+          )
+          print(
+              "Base fixture source lookup: "
+              f"{report['resolved_base_class_count']} resolved, "
+              f"{report['ambiguous_base_class_count']} ambiguous, "
+              f"{report['unresolved_base_class_count']} unresolved."
+          )
+          PY
+
+          echo "=== Covering test and fixture inheritance sources ==="
+          python3 -m json.tool covering-test-sources.json
+
+      - name: Generate agent mutation context
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          from datetime import datetime, timezone
+          from pathlib import Path
+
+          source_file = Path(os.environ["SOURCE_FILE"])
+          mutants_file = Path("surviving-mutants.tsv")
+          failed_tests_file = Path("tests-not-analysed.txt")
+          coverage_directory = Path("per-test-coverage")
+          test_sources_file = Path("covering-test-sources.json")
+          output_file = Path("agent-mutation-context.json")
+          context_radius = 5
+
+          if not source_file.is_file():
+              raise FileNotFoundError(f"Source file not found: {source_file}")
+
+          source_lines = source_file.read_text(encoding="utf-8", errors="replace").splitlines()
+
+          def read_non_empty_lines(path):
+              if not path.is_file():
+                  return []
+              return [line.strip() for line in path.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+
+          if test_sources_file.is_file():
+              test_sources_report = json.loads(test_sources_file.read_text(encoding="utf-8", errors="replace"))
+          else:
+              test_sources_report = {"test_count": 0, "resolved_count": 0, "ambiguous_count": 0, "unresolved_count": 0, "tests": {}}
+          test_sources_catalog = test_sources_report.get("tests", {})
+
+          def create_source_context(target_line):
+              if target_line < 1 or target_line > len(source_lines):
+                  return {"start_line": None, "end_line": None, "code": []}
+              start_line = max(1, target_line - context_radius)
+              end_line = min(len(source_lines), target_line + context_radius)
+              return {
+                  "start_line": start_line,
+                  "end_line": end_line,
+                  "code": [{"line": number, "is_mutated_line": number == target_line, "content": source_lines[number - 1]} for number in range(start_line, end_line + 1)],
+              }
+
+          mutants = []
+          if mutants_file.is_file():
+              for input_line_number, raw_line in enumerate(mutants_file.read_text(encoding="utf-8", errors="replace").splitlines(), start=1):
+                  if not raw_line.strip():
+                      continue
+                  fields = raw_line.split("\t", maxsplit=3)
+                  if len(fields) != 4:
+                      raise ValueError(f"Invalid surviving mutant entry at line {input_line_number}: {raw_line!r}")
+                  line_text, column_text, description, operator = fields
+                  line_number = int(line_text)
+                  column_number = int(column_text)
+                  covering_tests = sorted(set(read_non_empty_lines(coverage_directory / f"line-{line_number}-tests.txt")))
+                  contexts = [test_sources_catalog.get(name, {"name": name, "status": "unresolved", "reason": "Test not found in covering test source catalog", "matches": []}) for name in covering_tests]
+                  mutants.append({
+                      "id": f"mutant-{len(mutants) + 1}",
+                      "location": {"file": source_file.as_posix(), "line": line_number, "column": column_number},
+                      "description": description,
+                      "operator": operator,
+                      "covering_tests": covering_tests,
+                      "covering_test_count": len(covering_tests),
+                      "covering_test_contexts": contexts,
+                      "source_context": create_source_context(line_number),
+                  })
+
+          tests_not_analysed = sorted(set(read_non_empty_lines(failed_tests_file)))
+          report = {
+              "schema_version": "1.3",
+              "generated_at_utc": datetime.now(timezone.utc).isoformat(),
+              "execution": {
+                  "repository": os.environ.get("GITHUB_REPOSITORY", ""),
+                  "ref": os.environ.get("GITHUB_REF", ""),
+                  "sha": os.environ.get("GITHUB_SHA", ""),
+                  "workflow": os.environ.get("GITHUB_WORKFLOW", ""),
+                  "run_id": os.environ.get("GITHUB_RUN_ID", ""),
+                  "run_number": os.environ.get("GITHUB_RUN_NUMBER", ""),
+                  "run_attempt": os.environ.get("GITHUB_RUN_ATTEMPT", ""),
+              },
+              "mutation_campaign": {
+                  "source_file": source_file.as_posix(),
+                  "test_executable": os.environ.get("TEST_EXECUTABLE", ""),
+                  "surviving_mutant_count": len(mutants),
+                  "tests_not_analysed_count": len(tests_not_analysed),
+              },
+              "test_source_lookup": {key: test_sources_report.get(key, 0) for key in ("test_count", "resolved_count", "ambiguous_count", "unresolved_count")},
+              "fixture_source_lookup": {key: test_sources_report.get(key, 0) for key in ("fixture_count", "resolved_fixture_count", "ambiguous_fixture_count", "unresolved_fixture_count")},
+              "base_fixture_source_lookup": {key: test_sources_report.get(key, 0) for key in ("base_class_count", "resolved_base_class_count", "ambiguous_base_class_count", "unresolved_base_class_count")},
+              "mutants": mutants,
+              "tests_not_analysed": tests_not_analysed,
+          }
+          output_file.write_text(json.dumps(report, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+          print(f"Generated {output_file} with {len(mutants)} surviving mutant(s).")
+          PY
+
+          echo "=== Agent mutation context ==="
+          python3 -m json.tool agent-mutation-context.json
+
+      - name: Install Aider
+        if: always() && steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 -m pip install --user aider-chat
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Check Aider version
+        if: always() && steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+          aider --version
+
+      - name: Record repository state before Aider
+        if: always() && steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s agent-mutation-context.json
+          git diff --binary HEAD > "${RUNNER_TEMP}/before-aider.diff"
+          git status --short --untracked-files=no \
+            > "${RUNNER_TEMP}/before-aider.status"
+
+      - name: Analyze mutation context with Aider
+        if: always() && steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          PROMPT=$(cat <<'EOF'
+          Tu analyses un contexte de mutation testing Mull pour un projet C++.
+
+          Lis uniquement le fichier agent-mutation-context.json fourni en lecture seule.
+          Concentre-toi exclusivement sur le mutant situe a la ligne 108 de isobus/src/isobus_heartbeat.cpp, operateur cxx_gt_to_ge.
+          Ignore les autres mutants, sauf pour signaler qu'ils sont hors perimetre de cette analyse.
+
+          Ne modifie aucun fichier.
+          Ne fournis aucun patch ni extrait de code pret a appliquer.
+          Ne propose aucune modification du code de production.
+          Ne cree aucun nouveau test.
+          Toute proposition doit enrichir uniquement le test existant HeartbeatTest.HeartBeat.
+
+          L'objectif est de definir une strategie precise pour distinguer le comportement original :
+          heartbeat.sequenceCounter > 250
+          du comportement mute :
+          heartbeat.sequenceCounter >= 250
+
+          Commence obligatoirement ta reponse par la ligne exacte :
+          ANALYSIS_STATUS: SUCCESS
+
+          Produis ensuite une reponse concise et structuree contenant :
+          - les faits certains deduits du JSON ;
+          - les hypotheses et incertitudes, clairement separees des faits ;
+          - la valeur frontiere exacte qu'il faut atteindre ;
+          - une sequence d'actions envisagee dans HeartbeatTest.HeartBeat, decrite sans code ;
+          - les observations ou assertions qui distingueraient le code original du mutant ;
+          - les informations manquantes qui empechent de garantir que la strategie fonctionnera ;
+          - un verdict final parmi : STRATEGY_READY, MORE_CONTEXT_REQUIRED ou NOT_TREATABLE_UNDER_CONSTRAINTS.
+
+          N'affirme pas que le mutant est tuable si le JSON ne permet pas de le demontrer.
+          Signale explicitement toute inference.
+          EOF
+          )
+
+          ANALYSIS_DIR="${RUNNER_TEMP}/aider-analysis"
+          ANALYSIS_FILE="${GITHUB_WORKSPACE}/aider-mutant-108-strategy.txt"
+
+          rm -rf "${ANALYSIS_DIR}"
+          mkdir -p "${ANALYSIS_DIR}"
+          cp agent-mutation-context.json "${ANALYSIS_DIR}/agent-mutation-context.json"
+          cd "${ANALYSIS_DIR}"
+
+          aider \
+            --model openrouter/nvidia/nemotron-3-ultra-550b-a55b:free \
+            --chat-mode ask \
+            --read agent-mutation-context.json \
+            --message "${PROMPT}" \
+            --no-git \
+            --no-gitignore \
+            --map-tokens 0 \
+            --no-check-update \
+            --no-show-release-notes \
+            --no-auto-commits \
+            --no-pretty \
+            --no-stream \
+            2>&1 | tee "${ANALYSIS_FILE}"
+
+          test -s "${ANALYSIS_FILE}"
+
+          if grep -Eqi \
+            'litellm\.|APIConnectionError|OpenrouterException|Traceback|ValidationError|finish_reason.*error' \
+            "${ANALYSIS_FILE}"; then
+            echo "Aider/OpenRouter returned an API or model error." >&2
+            exit 1
+          fi
+
+          grep -Fxq 'ANALYSIS_STATUS: SUCCESS' "${ANALYSIS_FILE}"
+
+      - name: Verify that Aider changed no tracked file
+        if: always() && steps.surviving-mutants.outputs.count != '0'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git diff --binary HEAD > "${RUNNER_TEMP}/after-aider.diff"
+          git status --short --untracked-files=no \
+            > "${RUNNER_TEMP}/after-aider.status"
+
+          diff -u \
+            "${RUNNER_TEMP}/before-aider.diff" \
+            "${RUNNER_TEMP}/after-aider.diff"
+          diff -u \
+            "${RUNNER_TEMP}/before-aider.status" \
+            "${RUNNER_TEMP}/after-aider.status"
+
+          echo "Aider changed no tracked repository file."
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## Mull and covering tests"
+            echo
+            echo '```text'
+            cat tests-covering-surviving-mutants.txt 2>/dev/null || \
+              echo "The covering-tests report was not generated."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          if [ -s aider-mutant-108-strategy.txt ]; then
+            {
+              echo
+              echo "## Aider strategy for mutant line 108"
+              echo
+              echo '```text'
+              cat aider-mutant-108-strategy.txt
+              echo '```'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mull-single-source-file-mutant-108-strategy
+          path: |
+            mull-results/
+            mull-config.yml
+            all-tests-baseline.log
+            all-tests.profdata
+            source-file-coverage.txt
+            surviving-mutants.tsv
+            tests-covering-surviving-mutants.txt
+            tests-not-analysed.txt
+            selected-tests.txt
+            gtest-list.txt
+            per-test-coverage/line-*-tests.txt
+            covering-test-sources.json
+            agent-mutation-context.json
+            aider-mutant-108-strategy.txt
+          if-no-files-found: warn
+          retention-days: 30
