@@ -987,6 +987,7 @@ jobs:
             --chat-mode ask \
             --read agent-mutation-context.json \
             --message "${PROMPT}" \
+            --no-gitignore \
             --no-auto-commits \
             --no-pretty \
             --no-stream \
