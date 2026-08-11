@@ -115,6 +115,18 @@ TEST_F(HeartbeatTest, HeartBeat)
 	EXPECT_EQ(testFrame.dataLength, 1);
 	EXPECT_EQ(testFrame.data[0], 0);
 
+	// Verify sequence counter progresses up to 250 (kills mutant cxx_gt_to_ge at line 108)
+	for (std::uint8_t expected = 1; expected <= 250; ++expected)
+	{
+		time_source.update_for_ms(101);
+		CANNetworkManager::CANNetwork.update();
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(testFrame));
+		EXPECT_EQ(testFrame.identifier, 0x0CF0E441);
+		EXPECT_EQ(testFrame.dataLength, 1);
+		EXPECT_EQ(testFrame.data[0], expected);
+	}
+
 	// Supply a heartbeat
 	EXPECT_FALSE(new_heartbeat_callback_called);
 	new_heartbeat_callback_called = false;
