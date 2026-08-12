@@ -48,14 +48,39 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           clang-19 --version
           llvm-profdata-19 --version
           llvm-cov-19 --version
           mull-runner-19 --version
-          test -f /usr/lib/mull-ir-frontend-19
-          test -f "${SOURCE_FILE}"
-          test -f "${TEST_FILE}"
 
+          echo "SOURCE_FILE=${SOURCE_FILE}"
+          echo "TEST_FILE=${TEST_FILE}"
+          echo "Current directory: $(pwd)"
+
+          echo "Checking Mull frontend plugin..."
+          test -f /usr/lib/mull-ir-frontend-19 || {
+            echo "Missing file: /usr/lib/mull-ir-frontend-19" >&2
+            find /usr/lib -maxdepth 3 -iname '*mull*' -print 2>/dev/null
+            exit 1
+          }
+
+          echo "Checking source file..."
+          test -f "${SOURCE_FILE}" || {
+            echo "Missing source file: ${SOURCE_FILE}" >&2
+            find isobus -name 'isobus_heartbeat.cpp' -print 2>/dev/null
+            exit 1
+          }
+
+          echo "Checking test file..."
+          test -f "${TEST_FILE}" || {
+            echo "Missing test file: ${TEST_FILE}" >&2
+            find . -name 'heartbeat_tests.cpp' -print 2>/dev/null
+            exit 1
+          }
+
+          echo "All required files are present."
+          
       - name: Create Mull configuration
         shell: bash
         run: |
