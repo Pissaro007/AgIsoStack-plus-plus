@@ -15,6 +15,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/hardware_integration/virtual_can_plugin.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/can_stack_logger.hpp"
 #include "isobus/isobus/isobus_heartbeat.hpp"
 
 using namespace isobus;
@@ -158,6 +159,38 @@ TEST_F(HeartbeatTest, HeartBeat)
 
 	// No message should be sent
 	EXPECT_FALSE(testPlugin.read_frame(testFrame));
+	
+	// Test that calling set_enabled(false) again when already disabled does not log (kills mutant cxx_ne_to_eq at line 33)
+	class TestLogger : public isobus::CANStackLogger
+	{
+	public:
+		std::string lastLogText;
+		isobus::CANStackLogger::LoggingLevel lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
+		bool logCalled = false;
+
+		void sink_CAN_stack_log(isobus::CANStackLogger::LoggingLevel level, const std::string &logText) override
+		{
+			lastLogLevel = level;
+			lastLogText = logText;
+			logCalled = true;
+		}
+	};
+
+	TestLogger testLogger;
+	auto originalLogLevel = isobus::CANStackLogger::get_log_level();
+	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
+	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
+
+	// Call set_enabled(false) again when already disabled
+	heartbeatInterface.set_enabled(false);
+
+	// Verify no debug log was produced
+	EXPECT_FALSE(testLogger.logCalled);
+	EXPECT_EQ(testLogger.lastLogLevel, isobus::CANStackLogger::LoggingLevel::Info);
+
+	// Restore
+	isobus::CANStackLogger::set_can_stack_logger_sink(nullptr);
+	isobus::CANStackLogger::set_log_level(originalLogLevel);	
 
 	CANHardwareInterface::stop();
 }
