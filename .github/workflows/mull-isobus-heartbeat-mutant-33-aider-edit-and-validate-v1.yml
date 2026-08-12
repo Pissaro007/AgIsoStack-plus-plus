@@ -19,7 +19,7 @@ permissions:
   contents: read
 
 env:
-  SOURCE_FILE: ${{ inputs.source_file }}
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_heartbeat.cpp' }}
   TEST_FILE: test/heartbeat_tests.cpp
   TEST_EXECUTABLE: build/test/unit_tests
   TARGET_LINE: "33"
