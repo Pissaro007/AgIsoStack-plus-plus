@@ -128,15 +128,42 @@ TEST_F(HeartbeatTest, HeartBeat)
 		EXPECT_EQ(testFrame.data[0], expected);
 	}
 
-	// Supply a heartbeat
+	// Install logger to capture warning for initial heartbeat sequence counter
+	class TestLogger : public isobus::CANStackLogger
+	{
+	public:
+		std::string lastLogText;
+		isobus::CANStackLogger::LoggingLevel lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
+		bool logCalled = false;
+
+		void sink_CAN_stack_log(isobus::CANStackLogger::LoggingLevel level, const std::string &logText) override
+		{
+			lastLogLevel = level;
+			lastLogText = logText;
+			logCalled = true;
+		}
+	};
+
+	TestLogger testLogger;
+	auto originalLogLevel = isobus::CANStackLogger::get_log_level();
+	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
+	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
+
+	// Supply a heartbeat with sequence counter 0 (not Initial=251) to trigger warning
 	EXPECT_FALSE(new_heartbeat_callback_called);
 	new_heartbeat_callback_called = false;
 	testFrame.identifier = 0x0CF0E4F4;
 	testFrame.dataLength = 1;
-	testFrame.data[0] = 251;
+	testFrame.data[0] = 0; // Not the Initial value (251)
 	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
 	CANNetworkManager::CANNetwork.update();
 	EXPECT_TRUE(new_heartbeat_callback_called);
+
+	// Verify warning log for missing initial sequence counter
+	EXPECT_TRUE(testLogger.logCalled);
+	EXPECT_EQ(testLogger.lastLogLevel, isobus::CANStackLogger::LoggingLevel::Warning);
+	EXPECT_NE(testLogger.lastLogText.find("Initial heartbeat sequence counter not received"), std::string::npos);
+	EXPECT_NE(testLogger.lastLogText.find("0xF4"), std::string::npos);
 
 	// Wait to ensure that the heartbeat times out
 	EXPECT_FALSE(heartbeat_error_callback_called);
@@ -160,27 +187,11 @@ TEST_F(HeartbeatTest, HeartBeat)
 	// No message should be sent
 	EXPECT_FALSE(testPlugin.read_frame(testFrame));
 	
-	// Test that calling set_enabled(false) again when already disabled does not log (kills mutant cxx_ne_to_eq at line 33)
-	class TestLogger : public isobus::CANStackLogger
-	{
-	public:
-		std::string lastLogText;
-		isobus::CANStackLogger::LoggingLevel lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
-		bool logCalled = false;
-
-		void sink_CAN_stack_log(isobus::CANStackLogger::LoggingLevel level, const std::string &logText) override
-		{
-			lastLogLevel = level;
-			lastLogText = logText;
-			logCalled = true;
-		}
-	};
-
-	TestLogger testLogger;
-	auto originalLogLevel = isobus::CANStackLogger::get_log_level();
-	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
-	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
-
+	// Reset logger for the second set_enabled(false) call test (kills mutant cxx_ne_to_eq at line 33)
+	testLogger.logCalled = false;
+	testLogger.lastLogText.clear();
+	testLogger.lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
+	
 	// Call set_enabled(false) again when already disabled
 	heartbeatInterface.set_enabled(false);
 
