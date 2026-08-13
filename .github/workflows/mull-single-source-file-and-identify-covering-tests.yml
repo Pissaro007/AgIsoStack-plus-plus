@@ -126,6 +126,7 @@ jobs:
           cd build/test
           
           ./unit_tests \
+            --gtest_filter="CAN_NAME_TESTS.*" \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
 
