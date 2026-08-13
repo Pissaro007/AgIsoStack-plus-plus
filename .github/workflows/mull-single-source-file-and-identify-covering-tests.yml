@@ -104,6 +104,8 @@ jobs:
 
       - name: Compile unit tests
         shell: bash
+        env:
+          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
         run: |
           set -euo pipefail
 
