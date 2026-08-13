@@ -149,6 +149,26 @@ TEST_F(HeartbeatTest, HeartBeat)
 	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
 	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
 
+	// Test non-compliant interval request (kills mutant cxx_ne_to_eq at line 217)
+	testLogger.logCalled = false;
+	testFrame.identifier = 0x18CC41F4;  // Request from 0xF4 to 0x41
+	testFrame.dataLength = 8;
+	testFrame.data[0] = 0xE4;  // PGN 61668 (HeartbeatMessage) low byte
+	testFrame.data[1] = 0xF0;  // PGN 61668 mid byte
+	testFrame.data[2] = 0x00;  // PGN 61668 high byte
+	testFrame.data[3] = 0xC8;  // 200ms low byte
+	testFrame.data[4] = 0x00;  // 200ms high byte
+	testFrame.data[5] = 0xFF;
+	testFrame.data[6] = 0xFF;
+	testFrame.data[7] = 0xFF;
+	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
+	CANNetworkManager::CANNetwork.update();
+	EXPECT_TRUE(testLogger.logCalled);
+	EXPECT_EQ(testLogger.lastLogLevel, isobus::CANStackLogger::LoggingLevel::Warning);
+	EXPECT_NE(testLogger.lastLogText.find("non-compliant interval"), std::string::npos);
+	EXPECT_NE(testLogger.lastLogText.find("0xF4"), std::string::npos);
+	testLogger.logCalled = false;
+
 	// Supply a heartbeat with sequence counter 0 (not Initial=251) to trigger warning
 	EXPECT_FALSE(new_heartbeat_callback_called);
 	new_heartbeat_callback_called = false;
