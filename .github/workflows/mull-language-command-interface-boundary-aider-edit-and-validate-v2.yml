@@ -11,7 +11,7 @@ on:
 
   push:
     branches:
-      - quality/mull-language-command-interface
+      - quality/mull-isobus-language-command-interface
     paths:
       - .github/workflows/mull-language-command-interface-boundary-aider-edit-and-validate-v2.yml
 
