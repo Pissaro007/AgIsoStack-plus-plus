@@ -165,8 +165,10 @@ jobs:
           
           mull-runner-19 \
             --allow-surviving \
+            --include-not-covered \
             --ide-reporter-show-killed \
             --debug \
+            --debug-coverage \
             --timeout 120000 \
             --reporters IDE \
             --reporters Elements \
