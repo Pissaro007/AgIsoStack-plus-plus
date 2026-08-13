@@ -151,13 +151,13 @@ TEST_F(HeartbeatTest, HeartBeat)
 
 	// Test non-compliant interval request (kills mutant cxx_ne_to_eq at line 217)
 	testLogger.logCalled = false;
-	testFrame.identifier = 0x18CC41F4;  // Request from 0xF4 to 0x41
+	testFrame.identifier = 0x18CC41F4; // Request from 0xF4 to 0x41
 	testFrame.dataLength = 8;
-	testFrame.data[0] = 0xE4;  // PGN 61668 (HeartbeatMessage) low byte
-	testFrame.data[1] = 0xF0;  // PGN 61668 mid byte
-	testFrame.data[2] = 0x00;  // PGN 61668 high byte
-	testFrame.data[3] = 0xC8;  // 200ms low byte
-	testFrame.data[4] = 0x00;  // 200ms high byte
+	testFrame.data[0] = 0xE4; // PGN 61668 (HeartbeatMessage) low byte
+	testFrame.data[1] = 0xF0; // PGN 61668 mid byte
+	testFrame.data[2] = 0x00; // PGN 61668 high byte
+	testFrame.data[3] = 0xC8; // 200ms low byte
+	testFrame.data[4] = 0x00; // 200ms high byte
 	testFrame.data[5] = 0xFF;
 	testFrame.data[6] = 0xFF;
 	testFrame.data[7] = 0xFF;
@@ -206,12 +206,12 @@ TEST_F(HeartbeatTest, HeartBeat)
 
 	// No message should be sent
 	EXPECT_FALSE(testPlugin.read_frame(testFrame));
-	
+
 	// Reset logger for the second set_enabled(false) call test (kills mutant cxx_ne_to_eq at line 33)
 	testLogger.logCalled = false;
 	testLogger.lastLogText.clear();
 	testLogger.lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
-	
+
 	// Call set_enabled(false) again when already disabled
 	heartbeatInterface.set_enabled(false);
 
@@ -221,7 +221,7 @@ TEST_F(HeartbeatTest, HeartBeat)
 
 	// Restore
 	isobus::CANStackLogger::set_can_stack_logger_sink(nullptr);
-	isobus::CANStackLogger::set_log_level(originalLogLevel);	
+	isobus::CANStackLogger::set_log_level(originalLogLevel);
 
 	CANHardwareInterface::stop();
 }
