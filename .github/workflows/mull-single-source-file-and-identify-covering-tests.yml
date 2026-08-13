@@ -166,7 +166,6 @@ jobs:
             --allow-surviving \
             --debug \
             --timeout 120000 \
-            --coverage-info "${GITHUB_WORKSPACE}/all-tests.profdata" \
             --reporters IDE \
             --reporters Elements \
             --report-dir "${GITHUB_WORKSPACE}/mull-results" \
