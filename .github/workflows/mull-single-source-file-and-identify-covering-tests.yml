@@ -165,6 +165,7 @@ jobs:
           
           mull-runner-19 \
             --allow-surviving \
+            --ide-reporter-show-killed \
             --debug \
             --timeout 120000 \
             --reporters IDE \
@@ -172,6 +173,7 @@ jobs:
             --report-dir "${GITHUB_WORKSPACE}/mull-results" \
             --report-name single-source-file-all-tests \
             ./unit_tests \
+            --gtest_filter="CAN_NAME_TESTS.*" \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/mull-results/mull-console.log"
 
