@@ -15,6 +15,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/hardware_integration/virtual_can_plugin.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/can_stack_logger.hpp"
 #include "isobus/isobus/isobus_heartbeat.hpp"
 
 using namespace isobus;
@@ -115,15 +116,74 @@ TEST_F(HeartbeatTest, HeartBeat)
 	EXPECT_EQ(testFrame.dataLength, 1);
 	EXPECT_EQ(testFrame.data[0], 0);
 
-	// Supply a heartbeat
+	// Verify sequence counter progresses up to 250 (kills mutant cxx_gt_to_ge at line 108)
+	for (std::uint8_t expected = 1; expected <= 250; ++expected)
+	{
+		time_source.update_for_ms(101);
+		CANNetworkManager::CANNetwork.update();
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(testFrame));
+		EXPECT_EQ(testFrame.identifier, 0x0CF0E441);
+		EXPECT_EQ(testFrame.dataLength, 1);
+		EXPECT_EQ(testFrame.data[0], expected);
+	}
+
+	// Install logger to capture warning for initial heartbeat sequence counter
+	class TestLogger : public isobus::CANStackLogger
+	{
+	public:
+		std::string lastLogText;
+		isobus::CANStackLogger::LoggingLevel lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
+		bool logCalled = false;
+
+		void sink_CAN_stack_log(isobus::CANStackLogger::LoggingLevel level, const std::string &logText) override
+		{
+			lastLogLevel = level;
+			lastLogText = logText;
+			logCalled = true;
+		}
+	};
+
+	TestLogger testLogger;
+	auto originalLogLevel = isobus::CANStackLogger::get_log_level();
+	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
+	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
+
+	// Test non-compliant interval request (kills mutant cxx_ne_to_eq at line 217)
+	testLogger.logCalled = false;
+	testFrame.identifier = 0x18CC41F4; // Request from 0xF4 to 0x41
+	testFrame.dataLength = 8;
+	testFrame.data[0] = 0xE4; // PGN 61668 (HeartbeatMessage) low byte
+	testFrame.data[1] = 0xF0; // PGN 61668 mid byte
+	testFrame.data[2] = 0x00; // PGN 61668 high byte
+	testFrame.data[3] = 0xC8; // 200ms low byte
+	testFrame.data[4] = 0x00; // 200ms high byte
+	testFrame.data[5] = 0xFF;
+	testFrame.data[6] = 0xFF;
+	testFrame.data[7] = 0xFF;
+	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
+	CANNetworkManager::CANNetwork.update();
+	EXPECT_TRUE(testLogger.logCalled);
+	EXPECT_EQ(testLogger.lastLogLevel, isobus::CANStackLogger::LoggingLevel::Warning);
+	EXPECT_NE(testLogger.lastLogText.find("non-compliant interval"), std::string::npos);
+	EXPECT_NE(testLogger.lastLogText.find("0xF4"), std::string::npos);
+	testLogger.logCalled = false;
+
+	// Supply a heartbeat with sequence counter 0 (not Initial=251) to trigger warning
 	EXPECT_FALSE(new_heartbeat_callback_called);
 	new_heartbeat_callback_called = false;
 	testFrame.identifier = 0x0CF0E4F4;
 	testFrame.dataLength = 1;
-	testFrame.data[0] = 251;
+	testFrame.data[0] = 0; // Not the Initial value (251)
 	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
 	CANNetworkManager::CANNetwork.update();
 	EXPECT_TRUE(new_heartbeat_callback_called);
+
+	// Verify warning log for missing initial sequence counter
+	EXPECT_TRUE(testLogger.logCalled);
+	EXPECT_EQ(testLogger.lastLogLevel, isobus::CANStackLogger::LoggingLevel::Warning);
+	EXPECT_NE(testLogger.lastLogText.find("Initial heartbeat sequence counter not received"), std::string::npos);
+	EXPECT_NE(testLogger.lastLogText.find("0xF4"), std::string::npos);
 
 	// Wait to ensure that the heartbeat times out
 	EXPECT_FALSE(heartbeat_error_callback_called);
@@ -146,6 +206,22 @@ TEST_F(HeartbeatTest, HeartBeat)
 
 	// No message should be sent
 	EXPECT_FALSE(testPlugin.read_frame(testFrame));
+
+	// Reset logger for the second set_enabled(false) call test (kills mutant cxx_ne_to_eq at line 33)
+	testLogger.logCalled = false;
+	testLogger.lastLogText.clear();
+	testLogger.lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
+
+	// Call set_enabled(false) again when already disabled
+	heartbeatInterface.set_enabled(false);
+
+	// Verify no debug log was produced
+	EXPECT_FALSE(testLogger.logCalled);
+	EXPECT_EQ(testLogger.lastLogLevel, isobus::CANStackLogger::LoggingLevel::Info);
+
+	// Restore
+	isobus::CANStackLogger::set_can_stack_logger_sink(nullptr);
+	isobus::CANStackLogger::set_log_level(originalLogLevel);
 
 	CANHardwareInterface::stop();
 }
