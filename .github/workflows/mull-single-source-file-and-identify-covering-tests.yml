@@ -1,7 +1,5 @@
 name: Mull - Single Source File - All Tests and Covering Tests
 
-#re run #1
-
 on:
   workflow_dispatch:
     inputs:
@@ -12,7 +10,7 @@ on:
 
   push:
     branches:
-      - quality/generic-mull-workflows
+      - quality/#your_branch#
     paths:
       - .github/workflows/mull-single-source-file-and-identify-covering-tests.yml
 
@@ -20,8 +18,9 @@ permissions:
   contents: read
 
 env:
-  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_heartbeat.cpp' }}
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_shortcut_button_interface.cpp' }}
   TEST_EXECUTABLE: build/test/unit_tests
+  MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
 
 jobs:
   mutation-testing:
@@ -91,7 +90,6 @@ jobs:
         env:
           CC: clang-19
           CXX: clang++-19
-          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
         run: |
           set -euo pipefail
 
@@ -151,8 +149,6 @@ jobs:
 
       - name: Run Mull with all unit tests
         shell: bash
-        env:
-          MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
         run: |
           set -euo pipefail
 
