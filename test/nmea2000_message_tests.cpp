@@ -480,6 +480,124 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 	// This kills the cxx_gt_to_ge mutant at line 163 of nmea2000_fast_packet_protocol.cpp
 	EXPECT_TRUE(fastPacketProtocol.send_multipacket_message(0x1FFFF, maxLengthPayload.data(), static_cast<std::uint8_t>(maxLengthPayload.size()), testECU, nullptr));
 	fastPacketProtocol.update();
+
+	// Test Fast Packet reception at minimum PGN boundary (0x1F000) - kills cxx_lt_to_le mutant at line 274
+	{
+		struct CallbackContext
+		{
+			bool callbackHit = false;
+			std::uint32_t receivedPgn = 0;
+		} contextMin;
+
+		auto callbackMin = [](const CANMessage &msg, void *parent)
+		{
+			if (parent != nullptr)
+			{
+				auto *ctx = static_cast<CallbackContext *>(parent);
+				ctx->callbackHit = true;
+				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
+			}
+		};
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+			0x1F000, callbackMin, &contextMin, nullptr);
+
+		// Create a 20-byte Fast Packet message for PGN 0x1F000
+		std::vector<std::uint8_t> payloadMin(20, 0xAA);
+		payloadMin[0] = 0x11;
+		payloadMin[1] = 0x22;
+		payloadMin[2] = 0x33;
+		payloadMin[3] = 0x44;
+
+		CANMessageFrame frameMin = {};
+		frameMin.isExtendedFrame = true;
+		frameMin.channel = 0;
+		frameMin.dataLength = CAN_DATA_LENGTH;
+
+		// Frame 0: frame_counter=0, length=20, 6 bytes data
+		frameMin.identifier = 0x19F00052; // PGN 0x1F000, source 0x52
+		frameMin.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameMin.data[1] = 20; // total length
+		memcpy(&frameMin.data[2], payloadMin.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMin);
+
+		// Frame 1: frame_counter=1, 7 bytes data
+		frameMin.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&frameMin.data[1], payloadMin.data() + 6, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMin);
+
+		// Frame 2: frame_counter=2, 7 bytes data (remaining 7 bytes)
+		frameMin.data[0] = 0x02; // sequence=0, frame_counter=2
+		memcpy(&frameMin.data[1], payloadMin.data() + 13, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMin);
+
+		CANNetworkManager::CANNetwork.update();
+
+		EXPECT_TRUE(contextMin.callbackHit);
+		EXPECT_EQ(0x1F000u, contextMin.receivedPgn);
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+			0x1F000, callbackMin, &contextMin, nullptr);
+	}
+
+	// Test Fast Packet reception at maximum PGN boundary (0x1FFFF) - kills cxx_gt_to_ge mutant at line 275
+	{
+		struct CallbackContext
+		{
+			bool callbackHit = false;
+			std::uint32_t receivedPgn = 0;
+		} contextMax;
+
+		auto callbackMax = [](const CANMessage &msg, void *parent)
+		{
+			if (parent != nullptr)
+			{
+				auto *ctx = static_cast<CallbackContext *>(parent);
+				ctx->callbackHit = true;
+				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
+			}
+		};
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+			0x1FFFF, callbackMax, &contextMax, nullptr);
+
+		// Create a 20-byte Fast Packet message for PGN 0x1FFFF
+		std::vector<std::uint8_t> payloadMax(20, 0xBB);
+		payloadMax[0] = 0x55;
+		payloadMax[1] = 0x66;
+		payloadMax[2] = 0x77;
+		payloadMax[3] = 0x88;
+
+		CANMessageFrame frameMax = {};
+		frameMax.isExtendedFrame = true;
+		frameMax.channel = 0;
+		frameMax.dataLength = CAN_DATA_LENGTH;
+
+		// Frame 0: frame_counter=0, length=20, 6 bytes data
+		frameMax.identifier = 0x19FFFF52; // PGN 0x1FFFF, source 0x52
+		frameMax.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameMax.data[1] = 20; // total length
+		memcpy(&frameMax.data[2], payloadMax.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMax);
+
+		// Frame 1: frame_counter=1, 7 bytes data
+		frameMax.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&frameMax.data[1], payloadMax.data() + 6, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMax);
+
+		// Frame 2: frame_counter=2, 7 bytes data (remaining 7 bytes)
+		frameMax.data[0] = 0x02; // sequence=0, frame_counter=2
+		memcpy(&frameMax.data[1], payloadMax.data() + 13, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMax);
+
+		CANNetworkManager::CANNetwork.update();
+
+		EXPECT_TRUE(contextMax.callbackHit);
+		EXPECT_EQ(0x1FFFFu, contextMax.receivedPgn);
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+			0x1FFFF, callbackMax, &contextMax, nullptr);
+	}
 	
 	{
 		// Test COG/SOG
