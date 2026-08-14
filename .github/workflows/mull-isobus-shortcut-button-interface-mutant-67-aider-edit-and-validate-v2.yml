@@ -1,0 +1,527 @@
+name: Mull - Edit and Validate ISB Mutant Line 67 with Aider v2
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_file:
+        description: "Chemin du fichier source a muter"
+        required: true
+        default: "isobus/src/isobus_shortcut_button_interface.cpp"
+        type: string
+
+  push:
+    branches:
+      - quality/mull-shortcut-button-interface
+    paths:
+      - .github/workflows/mull-isobus-shortcut-button-interface-mutant-67-aider-edit-and-validate-v2.yml
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/isobus_shortcut_button_interface.cpp' }}
+  TEST_FILE: test/isb_tests.cpp
+  TEST_EXECUTABLE: build/test/unit_tests
+  TARGET_LINE: "67"
+  TARGET_OPERATOR: cxx_eq_to_ne
+  TARGET_TEST: IsobusShortcutButtonTest.ShortcutButtonTxTests
+  MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
+
+jobs:
+  mutation-testing:
+    name: Enrich existing ISB Tx test and validate mutant line 67
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 Mull and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y clang-19 llvm-19 build-essential cmake ninja-build curl python3-pip
+          curl -1sLf "https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh" | sudo -E bash
+          sudo apt-get update
+          sudo apt-get install -y mull-19
+
+      - name: Verify tools and input files
+        shell: bash
+        run: |
+          set -euo pipefail
+          clang-19 --version
+          llvm-profdata-19 --version
+          llvm-cov-19 --version
+          mull-runner-19 --version
+          test -f /usr/lib/mull-ir-frontend-19
+          test -f "${SOURCE_FILE}"
+          test -f "${TEST_FILE}"
+
+      - name: Create Mull configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          ESCAPED_SOURCE_FILE=$(printf '%s' "${SOURCE_FILE}" | sed 's#[][\\.^$*+?(){}|]#\\&#g')
+          cat > "${MULL_CONFIG}" <<EOF
+          includePaths:
+            - '.*${ESCAPED_SOURCE_FILE}$'
+          excludePaths:
+            - '.*googletest.*'
+            - '.*googlemock.*'
+            - '.*gtest.*'
+            - '.*gmock.*'
+          quiet: false
+          EOF
+          cat "${MULL_CONFIG}"
+
+      - name: Configure tests for Mull and LLVM coverage
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+        run: |
+          set -euo pipefail
+          cmake -S . -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Compile unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build --parallel
+          test -x "${TEST_EXECUTABLE}"
+
+      - name: Run baseline unit test suite and generate coverage
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/all-tests.profraw
+        run: |
+          set -euo pipefail
+          rm -f all-tests.profraw all-tests.profdata
+          cd build/test
+          ./unit_tests --gtest_color=no 2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
+          cd "${GITHUB_WORKSPACE}"
+          test -s all-tests.profraw
+          llvm-profdata-19 merge -sparse all-tests.profraw -o all-tests.profdata
+          test -s all-tests.profdata
+
+      - name: Run baseline Mull campaign on the whole source file
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mull-results-before-aider
+          mkdir -p mull-results-before-aider
+          cd build/test
+          mull-runner-19 \
+            --allow-surviving \
+            --debug \
+            --timeout 120000 \
+            --coverage-info "${GITHUB_WORKSPACE}/all-tests.profdata" \
+            --reporters IDE \
+            --reporters Elements \
+            --report-dir "${GITHUB_WORKSPACE}/mull-results-before-aider" \
+            --report-name isb-before-aider \
+            ./unit_tests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/mull-results-before-aider/mull-console.log"
+
+      - name: Verify target mutant survives before Aider
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          source = os.environ["SOURCE_FILE"].replace("\\", "/")
+          line = os.environ["TARGET_LINE"]
+          operator = os.environ["TARGET_OPERATOR"]
+          log = Path("mull-results-before-aider/mull-console.log").read_text(
+              encoding="utf-8", errors="replace"
+          )
+          pattern = re.compile(
+              rf"{re.escape(operator)}:([^:]+):{line}:(\d+):\d+:\d+\s+->\s+(\w+)"
+          )
+          matches = [
+              (path.replace("\\", "/"), column, status)
+              for path, column, status in pattern.findall(log)
+              if path.replace("\\", "/").endswith(source)
+          ]
+          if not matches:
+              raise SystemExit(
+                  f"Target mutant {operator} at line {line} was not found."
+              )
+          if not any(status == "Passed" for _, _, status in matches):
+              raise SystemExit(
+                  f"Target mutant at line {line} does not survive at baseline: {matches}"
+              )
+          print(f"Confirmed surviving target mutant: {matches}")
+          PY
+
+      - name: Generate focused context for Aider
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path(os.environ["SOURCE_FILE"])
+          target = int(os.environ["TARGET_LINE"])
+          lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+          start = max(1, target - 12)
+          end = min(len(lines), target + 12)
+          context = {
+              "target_mutant": {
+                  "file": source.as_posix(),
+                  "line": target,
+                  "operator": os.environ["TARGET_OPERATOR"],
+                  "mutation": "Replace == with !=",
+                  "known_covering_test": os.environ["TARGET_TEST"],
+              },
+              "source_context": [
+                  {"line": number, "is_target": number == target, "content": lines[number - 1]}
+                  for number in range(start, end + 1)
+              ],
+          }
+          Path("agent-mutant-67-context.json").write_text(
+              json.dumps(context, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+          PY
+          python3 -m json.tool agent-mutant-67-context.json
+
+      - name: Generate logger API context for Aider
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "=== CANStackLogger declarations and usages ==="
+            grep -R -n \
+              --include='*.hpp' \
+              --include='*.cpp' \
+              'class CANStackLogger\|CANStackLogger::' \
+              isobus test || true
+
+            echo
+            echo "=== Test logger declarations and usages ==="
+            grep -R -n \
+              --include='*.hpp' \
+              --include='*.cpp' \
+              'TestLogger\|set_logger\|set_log_sink\|set_sink' \
+              test isobus || true
+          } | tee logger-api-context.txt
+
+          test -s logger-api-context.txt
+
+      - name: Install Aider
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m pip install --user aider-chat
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Record test baseline before Aider
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          content = Path("test/isb_tests.cpp").read_text(encoding="utf-8")
+          count = len(re.findall(r"\bTEST(?:_F|_P)?\s*\(", content))
+          Path("baseline-test-count.txt").write_text(f"{count}\n", encoding="utf-8")
+          print(f"Existing GoogleTest declaration count: {count}")
+          PY
+
+      - name: Analyze and enrich existing ISB Tx test with Aider
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+          PROMPT=$(cat <<'EOF'
+          Analyse le mutant Mull survivant decrit dans agent-mutant-67-context.json.
+
+          Objectif : tuer uniquement le mutant cxx_eq_to_ne situe a la ligne 67 de
+          isobus/src/isobus_shortcut_button_interface.cpp en enrichissant le test
+          existant IsobusShortcutButtonTest.ShortcutButtonTxTests.
+
+          Le mutant remplace la comparaison == par != dans le traitement de
+          set_stop_all_implement_operations_state. Analyse toi-meme la difference
+          observable entre le code original et le mutant. Ajoute la verification
+          minimale et deterministe qui passe sur le code original et echoue sur le
+          mutant.
+
+          Le test actuel verifie deja l'initialisation de l'interface, l'envoi de la
+          trame ISB, le PGN, la longueur, les huit octets et l'etat final. Conserve
+          toutes ces verifications.
+
+          Le mutant inverse la branche de journalisation executee lorsque l'etat demande
+          est StopImplementOperations. Le changement d'etat et l'envoi de la trame sont
+          identiques dans le code original et dans le mutant. La difference observable
+          semble donc concerner le niveau ou le contenu du message journalise.
+
+          Le fichier logger-api-context.txt contient les declarations et les utilisations
+          des mecanismes de journalisation reellement disponibles dans le depot.
+
+          N'invente aucune classe, methode, enumeration ou fonction de journalisation.
+          En particulier, n'utilise une API CANStackLogger ou TestLogger que si sa
+          declaration ou un exemple d'utilisation reel apparait dans le contexte fourni.
+
+          Si aucune API publique existante ne permet au test d'observer la difference
+          entre les deux branches, ne genere pas de fausse API. N'applique alors aucune
+          modification et explique clairement dans la sortie Aider que le mutant ne peut
+          pas etre tue avec les API de test disponibles.
+
+          Contraintes absolues :
+          - modifie uniquement test/isb_tests.cpp ;
+          - enrichis uniquement le test existant
+            IsobusShortcutButtonTest.ShortcutButtonTxTests ;
+          - ne cree aucun nouveau TEST, TEST_F ou TEST_P ;
+          - ne modifie jamais le code de production ;
+          - ne modifie aucun autre fichier ;
+          - n'affaiblis, ne supprime et ne remplace aucune assertion existante ;
+          - n'utilise aucune attente reelle ;
+          - n'ajoute aucune dependance GoogleMock ;
+          - n'utilise ni EXPECT_THAT ni HasSubstr ;
+          - utilise uniquement les API publiques et les assertions GoogleTest deja
+            disponibles dans le projet ;
+          - reutilise les objets, Control Functions, VirtualCANPlugin et fixtures deja
+            presents lorsque cela est pertinent ;
+          - conserve le nettoyage CANHardwareInterface et la desactivation de la
+            Control Function ;
+          - applique la modification minimale necessaire.
+
+          Le fichier de production et le contexte du mutant sont fournis en lecture
+          seule. Le fichier test/isb_tests.cpp est fourni en edition. Genere et applique
+          toi-meme le patch uniquement dans ce fichier.
+          EOF
+          )
+
+          aider \
+            --model openrouter/nvidia/nemotron-3-ultra-550b-a55b:free \
+            --edit-format diff \
+            --read agent-mutant-67-context.json \
+            --read logger-api-context.txt \
+            --read "${SOURCE_FILE}" \
+            --file "${TEST_FILE}" \
+            --message "${PROMPT}" \
+            --no-gitignore \
+            --map-tokens 0 \
+            --no-check-update \
+            --no-show-release-notes \
+            --analytics-disable \
+            --chat-history-file "${RUNNER_TEMP}/aider.chat.history.md" \
+            --input-history-file "${RUNNER_TEMP}/aider.input.history" \
+            --llm-history-file "${RUNNER_TEMP}/aider.llm.history" \
+            --no-auto-commits \
+            --no-dirty-commits \
+            --no-pretty \
+            --no-stream \
+            --yes-always \
+            2>&1 | tee aider-mutant-67-edit.txt
+
+          test -s aider-mutant-67-edit.txt
+
+      - name: Enforce Aider modification boundaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git diff --quiet -- ':(exclude)test/isb_tests.cpp'; then
+            echo "Aider modified a tracked file other than test/isb_tests.cpp." >&2
+            git diff -- ':(exclude)test/isb_tests.cpp' >&2
+            exit 1
+          fi
+          if git diff --quiet -- test/isb_tests.cpp; then
+            echo "Aider did not modify test/isb_tests.cpp." >&2
+            exit 1
+          fi
+          if ! git diff --quiet -- "${SOURCE_FILE}"; then
+            echo "Production code was modified." >&2
+            exit 1
+          fi
+          if grep -nE \
+            'CANStackLogger::get_captured_logs|CANStackLogger::Level' \
+            "${TEST_FILE}"; then
+            echo "Aider used unsupported CANStackLogger APIs." >&2
+            exit 1
+          fi
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          path = Path("test/isb_tests.cpp")
+          content = path.read_text(encoding="utf-8")
+          before = int(Path("baseline-test-count.txt").read_text().strip())
+          after = len(re.findall(r"\bTEST(?:_F|_P)?\s*\(", content))
+          if after != before:
+              raise SystemExit(
+                  f"GoogleTest declaration count changed: before={before}, after={after}"
+              )
+          if not re.search(
+              r"\bTEST_F\s*\(\s*IsobusShortcutButtonTest\s*,\s*ShortcutButtonTxTests\s*\)",
+              content,
+          ):
+              raise SystemExit(
+                  "IsobusShortcutButtonTest.ShortcutButtonTxTests was not found."
+              )
+          print(f"GoogleTest declaration count unchanged: {after}")
+          PY
+          git diff --check
+          git diff -- test/isb_tests.cpp | tee aider-mutant-67.patch
+
+      - name: Rebuild unit tests after Aider edit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build --parallel
+          test -x "${TEST_EXECUTABLE}"
+
+      - name: Run enriched ISB Tx test
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd build/test
+          ./unit_tests \
+            --gtest_filter=IsobusShortcutButtonTest.ShortcutButtonTxTests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/isb-tx-test-after-aider.log"
+
+      - name: Run full unit test suite after Aider edit and regenerate coverage
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/all-tests-after-aider.profraw
+        run: |
+          set -euo pipefail
+          rm -f "${GITHUB_WORKSPACE}/all-tests-after-aider.profraw" \
+                "${GITHUB_WORKSPACE}/all-tests-after-aider.profdata"
+          cd build/test
+          ./unit_tests --gtest_color=no 2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-after-aider.log"
+          cd "${GITHUB_WORKSPACE}"
+          test -s all-tests-after-aider.profraw
+          llvm-profdata-19 merge \
+            -sparse \
+            all-tests-after-aider.profraw \
+            -o all-tests-after-aider.profdata
+
+      - name: Run full Mull campaign after Aider edit
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf mull-results-after-aider
+          mkdir -p mull-results-after-aider
+          cd build/test
+          mull-runner-19 \
+            --allow-surviving \
+            --debug \
+            --timeout 120000 \
+            --coverage-info "${GITHUB_WORKSPACE}/all-tests-after-aider.profdata" \
+            --reporters IDE \
+            --reporters Elements \
+            --report-dir "${GITHUB_WORKSPACE}/mull-results-after-aider" \
+            --report-name isb-after-aider-line-67 \
+            ./unit_tests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/mull-results-after-aider/mull-console.log"
+
+      - name: Verify line 67 and report remaining survivors
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          source = os.environ["SOURCE_FILE"].replace("\\", "/")
+          log = Path("mull-results-after-aider/mull-console.log").read_text(
+              encoding="utf-8", errors="replace"
+          )
+          pattern = re.compile(
+              r"(?:^|\s)(cxx_[A-Za-z0-9_]+):"
+              r"(.+?):(\d+):(\d+):\d+:\d+\s+->\s+(Passed|Failed)"
+          )
+          rows = []
+          for operator, path, line, column, status in pattern.findall(log):
+              normalized = path.replace("\\", "/")
+              if normalized.endswith(source):
+                  rows.append((operator, int(line), int(column), status))
+
+          target = [
+              row for row in rows
+              if row[0] == "cxx_eq_to_ne" and row[1] == 67
+          ]
+          if not target:
+              raise SystemExit(
+                  "Target mutant cxx_eq_to_ne at line 67 was not parsed from the "
+                  "post-edit Mull output."
+              )
+          if any(row[3] == "Passed" for row in target):
+              raise SystemExit(f"Target mutant at line 67 still survives: {target}")
+
+          surviving = sorted(row for row in rows if row[3] == "Passed")
+          report = [
+              "Target mutant line 67: killed.",
+              f"Surviving mutants after Aider: {len(surviving)}",
+          ]
+          report.extend(str(row) for row in surviving)
+          Path("post-aider-mutation-summary.txt").write_text(
+              "\n".join(report) + "\n", encoding="utf-8"
+          )
+          print("\n".join(report))
+          PY
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## ISB mutant line 67"
+            echo
+            echo '```text'
+            cat post-aider-mutation-summary.txt 2>/dev/null || \
+              echo "Final mutation summary was not generated."
+            echo '```'
+            echo
+            echo "## Authorized patch"
+            echo
+            echo '```diff'
+            cat aider-mutant-67.patch 2>/dev/null || \
+              echo "Aider patch was not generated."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mull-isb-mutant-67-edit-and-validation-v2
+          path: |
+            mull-config.yml
+            all-tests-baseline.log
+            all-tests.profdata
+            mull-results-before-aider/
+            agent-mutant-67-context.json
+            logger-api-context.txt
+            baseline-test-count.txt
+            aider-mutant-67-edit.txt
+            aider-mutant-67.patch
+            isb-tx-test-after-aider.log
+            all-tests-after-aider.log
+            all-tests-after-aider.profdata
+            mull-results-after-aider/
+            post-aider-mutation-summary.txt
+          if-no-files-found: warn
+          retention-days: 30
