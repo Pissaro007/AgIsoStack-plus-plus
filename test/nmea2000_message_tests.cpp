@@ -3,6 +3,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/hardware_integration/virtual_can_plugin.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/nmea2000_fast_packet_protocol.hpp"
 #include "isobus/isobus/nmea2000_message_definitions.hpp"
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 #include "isobus/utility/system_timing.hpp"
@@ -448,6 +449,13 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		testPlugin.read_frame(testFrame);
 	}
 	ASSERT_TRUE(testPlugin.get_queue_empty());
+
+	// Test FastPacketProtocol::calculate_number_of_frames() boundary values
+	// This kills the cxx_gt_to_le mutant at line 93 of nmea2000_fast_packet_protocol.cpp
+	EXPECT_EQ(1u, FastPacketProtocol::calculate_number_of_frames(6));   // 6 bytes = 1 frame (first frame carries 6)
+	EXPECT_EQ(2u, FastPacketProtocol::calculate_number_of_frames(7));   // 7 bytes = 2 frames (6 + 1)
+	EXPECT_EQ(2u, FastPacketProtocol::calculate_number_of_frames(13));  // 13 bytes = 2 frames (6 + 7)
+	EXPECT_EQ(3u, FastPacketProtocol::calculate_number_of_frames(14));  // 14 bytes = 3 frames (6 + 7 + 1)
 
 	{
 		// Test COG/SOG
