@@ -457,6 +457,14 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 	EXPECT_EQ(2u, FastPacketProtocol::calculate_number_of_frames(13));  // 13 bytes = 2 frames (6 + 7)
 	EXPECT_EQ(3u, FastPacketProtocol::calculate_number_of_frames(14));  // 14 bytes = 3 frames (6 + 7 + 1)
 
+	// Fast Packet must reject a payload that fits in one CAN frame.
+	std::uint8_t singleFramePayload[CAN_DATA_LENGTH] = {};
+	FastPacketProtocol fastPacketProtocol([](auto &&...) {
+		return true;
+	});
+
+	EXPECT_FALSE(fastPacketProtocol.send_multipacket_message(0x1F014, singleFramePayload, static_cast<std::uint8_t>(sizeof(singleFramePayload)), testECU, nullptr));	
+	
 	{
 		// Test COG/SOG
 		NMEA2000MessageInterface interfaceUnderTest(testECU, true, false, false, false, false, false, false);
