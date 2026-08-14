@@ -77,6 +77,21 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonRxTests)
 	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::PermitAllImplementsToOperationOn, interfaceUnderTest.get_state());
 
 	// Send increased, incorrect transition count
+	// Set up test logger to verify ERROR log is emitted when transitioning to StopImplementOperations
+	class TestLogger : public isobus::CANStackLogger
+	{
+	public:
+		isobus::CANStackLogger::LoggingLevel lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
+		void sink_CAN_stack_log(isobus::CANStackLogger::LoggingLevel level, const std::string &) override
+		{
+			lastLogLevel = level;
+		}
+	};
+	TestLogger testLogger;
+	auto originalLogLevel = isobus::CANStackLogger::get_log_level();
+	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
+	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
+
 	testFrame.identifier = 0x18FD0274;
 	testFrame.data[0] = 0xFF;
 	testFrame.data[1] = 0xFF;
@@ -89,6 +104,12 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonRxTests)
 	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
 	CANNetworkManager::CANNetwork.update();
 	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::StopImplementOperations, interfaceUnderTest.get_state());
+
+	// Verify ERROR log was emitted (mutant would log INFO instead)
+	EXPECT_EQ(isobus::CANStackLogger::LoggingLevel::Error, testLogger.lastLogLevel);
+
+	isobus::CANStackLogger::set_can_stack_logger_sink(nullptr);
+	isobus::CANStackLogger::set_log_level(originalLogLevel);
 
 	// Test reset of state as counter is back to normal
 	testFrame.identifier = 0x18FD0274;
