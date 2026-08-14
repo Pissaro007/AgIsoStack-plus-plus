@@ -1,0 +1,795 @@
+name: Mull - Edit Validate and Retry NMEA2000 Fast Packet Mutants Lines 403 and 408 with Aider v1
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_file:
+        description: "Chemin du fichier source a muter"
+        required: true
+        default: "isobus/src/nmea2000_fast_packet_protocol.cpp"
+        type: string
+
+  push:
+    branches:
+      - quality/mull-nmea2000-fast-packet-protocol
+    paths:
+      - .github/workflows/mull-nmea2000-fast-packet-protocol-mutants-403-408-rx-length-boundaries-aider-loop-v1.yml
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_FILE: ${{ inputs.source_file || 'isobus/src/nmea2000_fast_packet_protocol.cpp' }}
+  SOURCE_HEADER: isobus/include/isobus/isobus/nmea2000_fast_packet_protocol.hpp
+  TEST_FILE: test/nmea2000_message_tests.cpp
+  TEST_EXECUTABLE: build/test/unit_tests
+  TARGET_LINE: "403"
+  TARGET_LINE_2: "408"
+  TARGET_OPERATOR: cxx_gt_to_ge
+  TARGET_OPERATOR_2: cxx_le_to_lt
+  TARGET_TEST: NMEA2000Test.NMEA2KInterface
+  MULL_CONFIG: ${{ github.workspace }}/mull-config.yml
+  MAX_AIDER_ATTEMPTS: "3"
+
+jobs:
+  mutation-testing:
+    name: Edit validate and retry Fast Packet receive length mutants lines 403 and 408
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Clang 19 Mull Aider and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-19 \
+            llvm-19 \
+            build-essential \
+            cmake \
+            ninja-build \
+            curl \
+            python3-pip
+
+          curl -1sLf \
+            "https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh" \
+            | sudo -E bash
+
+          sudo apt-get update
+          sudo apt-get install -y mull-19
+
+          python3 -m pip install --user aider-chat
+          echo "${HOME}/.local/bin" >> "${GITHUB_PATH}"
+
+      - name: Verify tools and input files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang-19 --version
+          llvm-profdata-19 --version
+          llvm-cov-19 --version
+          mull-runner-19 --version
+          test -f /usr/lib/mull-ir-frontend-19
+          test -f "${SOURCE_FILE}"
+          test -f "${SOURCE_HEADER}"
+          test -f isobus/include/isobus/isobus/can_network_manager.hpp
+          test -f "${TEST_FILE}"
+
+      - name: Create Mull configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ESCAPED_SOURCE_FILE=$(printf '%s' "${SOURCE_FILE}" | sed 's#[][\\.^$*+?(){}|]#\\&#g')
+
+          cat > "${MULL_CONFIG}" <<EOF
+          includePaths:
+            - '.*${ESCAPED_SOURCE_FILE}$'
+          excludePaths:
+            - '.*googletest.*'
+            - '.*googlemock.*'
+            - '.*gtest.*'
+            - '.*gmock.*'
+          quiet: false
+          EOF
+
+          cat "${MULL_CONFIG}"
+
+      - name: Configure tests for Mull and LLVM coverage
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Compile unit tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build --parallel
+          test -x "${TEST_EXECUTABLE}"
+
+      - name: Run baseline unit test suite and generate coverage
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/all-tests.profraw
+        run: |
+          set -euo pipefail
+
+          rm -f all-tests.profraw all-tests.profdata
+          find build -type f -name '*.gcda' -delete
+
+          cd build/test
+          ./unit_tests --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/all-tests-baseline.log"
+          cd "${GITHUB_WORKSPACE}"
+
+          test -s all-tests.profraw
+          llvm-profdata-19 merge -sparse all-tests.profraw -o all-tests.profdata
+          test -s all-tests.profdata
+
+      - name: Run baseline Mull campaign
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf mull-results-before-aider
+          mkdir -p mull-results-before-aider
+
+          cd build/test
+          mull-runner-19 \
+            --allow-surviving \
+            --debug \
+            --timeout 120000 \
+            --coverage-info "${GITHUB_WORKSPACE}/all-tests.profdata" \
+            --reporters IDE \
+            --reporters Elements \
+            --report-dir "${GITHUB_WORKSPACE}/mull-results-before-aider" \
+            --report-name nmea2000-fast-packet-before-aider \
+            ./unit_tests \
+            --gtest_color=no \
+            2>&1 | tee "${GITHUB_WORKSPACE}/mull-results-before-aider/mull-console.log"
+
+      - name: Verify both target mutants survive before Aider
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          source = os.environ["SOURCE_FILE"].replace("\\", "/")
+          targets = [
+              (os.environ["TARGET_OPERATOR"], os.environ["TARGET_LINE"]),
+              (os.environ["TARGET_OPERATOR_2"], os.environ["TARGET_LINE_2"]),
+          ]
+          log = Path("mull-results-before-aider/mull-console.log").read_text(
+              encoding="utf-8", errors="replace"
+          )
+
+          for operator, line in targets:
+              pattern = re.compile(
+                  rf"{re.escape(operator)}:([^:]+):{line}:(\d+):\d+:\d+\s+->\s+(\w+)"
+              )
+              matches = [
+                  (path.replace("\\", "/"), column, status)
+                  for path, column, status in pattern.findall(log)
+                  if path.replace("\\", "/").endswith(source)
+              ]
+
+              if not matches:
+                  raise SystemExit(
+                      f"Target mutant {operator} at line {line} was not found."
+                  )
+
+              if not any(status == "Passed" for _, _, status in matches):
+                  raise SystemExit(
+                      f"Target mutant {operator} at line {line} does not survive at baseline: {matches}"
+                  )
+
+              print(f"Confirmed surviving target mutant {operator} at line {line}: {matches}")
+          PY
+
+      - name: Generate focused context and initial prompt
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          from pathlib import Path
+
+          source = Path(os.environ["SOURCE_FILE"])
+          target_line_1 = int(os.environ["TARGET_LINE"])
+          target_line_2 = int(os.environ["TARGET_LINE_2"])
+          target_lines = {target_line_1, target_line_2}
+          lines = source.read_text(encoding="utf-8", errors="replace").splitlines()
+          start = max(1, min(target_lines) - 15)
+          end = min(len(lines), max(target_lines) + 15)
+
+          context = {
+              "target_mutants": [
+                  {
+                      "file": source.as_posix(),
+                      "line": target_line_1,
+                      "operator": os.environ["TARGET_OPERATOR"],
+                      "mutation": "Replace > with >= at the maximum advertised receive length",
+                      "known_covering_test": os.environ["TARGET_TEST"],
+                  },
+                  {
+                      "file": source.as_posix(),
+                      "line": target_line_2,
+                      "operator": os.environ["TARGET_OPERATOR_2"],
+                      "mutation": "Replace <= with < at the minimum invalid advertised receive length",
+                      "known_covering_test": os.environ["TARGET_TEST"],
+                  },
+              ],
+              "source_context": [
+                  {
+                      "line": number,
+                      "is_target": number in target_lines,
+                      "content": lines[number - 1],
+                  }
+                  for number in range(start, end + 1)
+              ],
+          }
+
+          Path("agent-mutants-403-408-context.json").write_text(
+              json.dumps(context, indent=2, ensure_ascii=False) + "\n",
+              encoding="utf-8",
+          )
+
+          test_content = Path(os.environ["TEST_FILE"]).read_text(encoding="utf-8")
+          count = len(re.findall(r"\bTEST(?:_F|_P)?\s*\(", test_content))
+          Path("baseline-test-count.txt").write_text(f"{count}\n", encoding="utf-8")
+          print(f"Existing GoogleTest declaration count: {count}")
+          PY
+
+          cat > aider-initial-prompt.txt <<'EOF'
+          Analyse les deux mutants Mull survivants decrits dans
+          agent-mutants-403-408-context.json.
+
+          Objectif : tuer simultanement les mutants suivants dans
+          isobus/src/nmea2000_fast_packet_protocol.cpp en enrichissant uniquement le test
+          existant NMEA2000Test.NMEA2KInterface :
+          - ligne 403, cxx_gt_to_ge : messageLength > 223 devient messageLength >= 223 ;
+          - ligne 408, cxx_le_to_lt : messageLength <= 8 devient messageLength < 8.
+
+          Ces mutants concernent la longueur annoncee dans la premiere trame d'une session
+          Fast Packet recue. Le code original accepte les longueurs de 9 a 223 octets
+          inclus. Il doit donc accepter exactement 223 octets et refuser exactement 8
+          octets.
+
+          Reutilise l'infrastructure de reception Fast Packet deja ajoutee et validee dans
+          NMEA2000Test.NMEA2KInterface, notamment l'acces reel suivant :
+
+          CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)
+
+          Cette methode retourne une reference vers un std::unique_ptr. Utilise -> pour
+          enregistrer et retirer les callbacks. CANLibCallback est un pointeur de fonction
+          void (*)(const CANMessage &, void *). Utilise une fonction statique existante ou
+          une lambda sans capture, et passe l'etat observable par le parametre parent.
+
+          Ajoute deux scenarios deterministes avec deux PGN valides distincts afin d'eviter
+          toute interference de session :
+
+          1. Longueur maximale acceptee, 223 octets :
+             - enregistre un callback pour un PGN valide ;
+             - injecte une premiere trame Fast Packet avec compteur de trame 0 et longueur
+               annoncee 223 ;
+             - injecte toutes les trames suivantes necessaires pour completer exactement
+               les 223 octets ;
+             - verifie que le callback est appele une seule fois et que le message
+               reconstruit contient exactement 223 octets avec le PGN attendu ;
+             - retire le callback avec les memes arguments.
+
+          2. Longueur invalide, 8 octets :
+             - enregistre un callback pour un autre PGN valide ;
+             - injecte une premiere trame Fast Packet avec compteur de trame 0 et longueur
+               annoncee 8 ;
+             - injecte ensuite une trame suivante qui completerait le message uniquement si
+               une session invalide avait ete creee ;
+             - verifie que le callback n'est jamais appele ;
+             - retire le callback avec les memes arguments.
+
+          Pour toutes les trames, initialise explicitement isExtendedFrame a true, channel
+          a 0 et utilise comme adresse source le Partnered Control Function 0x52 deja
+          present dans le test. Utilise des PGN compris entre 0x1F000 et 0x1FFFF. Ne
+          reutilise pas un PGN ayant une session active.
+
+          N'accede pas aux constantes privees MAX_PROTOCOL_MESSAGE_LENGTH,
+          CAN_DATA_LENGTH via FastPacketProtocol, FP_MIN_PARAMETER_GROUP_NUMBER,
+          FP_MAX_PARAMETER_GROUP_NUMBER, FRAME_COUNTER_BIT_MASK ou
+          SEQUENCE_NUMBER_BIT_OFFSET. Utilise directement les valeurs de frontiere 223 et
+          8, ainsi que des compteurs et numeros de sequence explicitement controles.
+
+          Le scenario de 223 octets doit remplir les octets utiles de facon deterministe et
+          eviter tout depassement de tampon sur la derniere trame. Les octets non utilises
+          de la derniere trame peuvent etre initialises a 0xFF.
+
+          Etat valide a conserver :
+          - tous les enrichissements qui tuent deja les mutants des lignes 93, 153, 163,
+            221, 261, 274, 275, 297, 378 et 488 ;
+          - tous les scenarios COG/SOG, Datum, GNSS Position Data, Position Delta,
+            Position Rapid Update, Rate Of Turn et Vessel Heading ;
+          - toutes les assertions existantes et le nettoyage final.
+
+          Contraintes absolues :
+          - modifie uniquement test/nmea2000_message_tests.cpp ;
+          - enrichis uniquement NMEA2000Test.NMEA2KInterface ;
+          - ne cree aucun nouveau TEST, TEST_F ou TEST_P ;
+          - ne modifie ni le code ni les headers de production ;
+          - n'affaiblis, ne supprime et ne remplace aucune assertion existante ;
+          - n'invente aucune API, classe, methode, constante ou enumeration ;
+          - n'utilise aucune attente reelle ;
+          - n'ajoute aucune dependance GoogleMock ;
+          - le patch final doit compiler, passer le test cible et la suite complete ;
+          - le patch doit tuer les deux mutants des lignes 403 et 408 ;
+          - applique la modification minimale et deterministe necessaire.
+
+          Genere et applique le patch uniquement dans test/nmea2000_message_tests.cpp.
+          EOF
+
+          python3 -m json.tool agent-mutants-403-408-context.json
+
+      - name: Create loop validation scripts
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cat > validate-test-structure.py <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path(os.environ["TEST_FILE"])
+          content = path.read_text(encoding="utf-8")
+          before = int(Path("baseline-test-count.txt").read_text().strip())
+          after = len(re.findall(r"\bTEST(?:_F|_P)?\s*\(", content))
+
+          if after != before:
+              raise SystemExit(
+                  f"GoogleTest declaration count changed: before={before}, after={after}"
+              )
+
+          if not re.search(
+              r"\bTEST_F\s*\(\s*NMEA2000Test\s*,\s*NMEA2KInterface\s*\)",
+              content,
+          ):
+              raise SystemExit("NMEA2000Test.NMEA2KInterface was not found.")
+
+          if "FastPacketProtocol::calculate_number_of_frames(7)" not in content:
+              raise SystemExit(
+                  "The existing line-93 boundary assertion was removed."
+              )
+
+          print(f"GoogleTest declaration count unchanged: {after}")
+          PY
+
+          cat > validate-target-mutant.py <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          source = os.environ["SOURCE_FILE"].replace("\\", "/")
+          targets = [
+              (os.environ["TARGET_OPERATOR"], int(os.environ["TARGET_LINE"])),
+              (os.environ["TARGET_OPERATOR_2"], int(os.environ["TARGET_LINE_2"])),
+          ]
+          log = Path("mull-results-after-aider/mull-console.log").read_text(
+              encoding="utf-8", errors="replace"
+          )
+          pattern = re.compile(
+              r"(?:^|\s)(cxx_[A-Za-z0-9_]+):"
+              r"(.+?):(\d+):(\d+):\d+:\d+\s+->\s+(Passed|Failed)"
+          )
+
+          rows = []
+          for operator, path, line, column, status in pattern.findall(log):
+              normalized = path.replace("\\", "/")
+              if normalized.endswith(source):
+                  rows.append((operator, int(line), int(column), status))
+
+          killed_targets = []
+          for target_operator, target_line in targets:
+              target = [
+                  row for row in rows
+                  if row[0] == target_operator and row[1] == target_line
+              ]
+
+              if not target:
+                  raise SystemExit(
+                      f"Target mutant {target_operator} at line {target_line} was not parsed."
+                  )
+
+              if any(row[3] == "Passed" for row in target):
+                  raise SystemExit(
+                      f"Target mutant {target_operator} at line {target_line} still survives: {target}"
+                  )
+
+              killed_targets.append(f"{target_operator}@{target_line}")
+
+          surviving = sorted(row for row in rows if row[3] == "Passed")
+          report = [
+              f"Target receive-length mutants killed: {', '.join(killed_targets)}.",
+              f"Surviving mutants after Aider: {len(surviving)}",
+          ]
+          report.extend(str(row) for row in surviving)
+          Path("post-aider-mutation-summary.txt").write_text(
+              "\n".join(report) + "\n", encoding="utf-8"
+          )
+          print("\n".join(report))
+          PY
+
+          python3 -m py_compile             validate-test-structure.py             validate-target-mutant.py
+
+      - name: Run Aider correction loop
+        shell: bash
+        env:
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          mkdir -p aider-attempts
+          feedback_file="aider-feedback.txt"
+          : > "${feedback_file}"
+
+          build_retry_prompt() {
+            {
+              cat aider-initial-prompt.txt
+              echo
+              echo "============================================================"
+              echo "RETOUR DE VALIDATION DE LA TENTATIVE PRECEDENTE"
+              echo "============================================================"
+              cat "${feedback_file}"
+              echo
+              echo "Reanalyse le mutant, le fichier de test dans son etat actuel et ce retour."
+              echo "Corrige le patch existant en respectant integralement le prompt initial."
+            } > aider-current-prompt.txt
+          }
+
+          cp aider-initial-prompt.txt aider-current-prompt.txt
+          success=false
+
+          for attempt in $(seq 1 "${MAX_AIDER_ATTEMPTS}"); do
+            echo "=== Aider attempt ${attempt}/${MAX_AIDER_ATTEMPTS} ==="
+
+            attempt_dir="aider-attempts/attempt-${attempt}"
+            mkdir -p "${attempt_dir}"
+
+            cp aider-current-prompt.txt "${attempt_dir}/prompt.txt"
+            cp "${feedback_file}" "${attempt_dir}/feedback-before-attempt.txt"
+
+            set +e
+            aider \
+              --model openrouter/nvidia/nemotron-3-ultra-550b-a55b:free \
+              --edit-format diff \
+              --read agent-mutants-403-408-context.json \
+              --read "${SOURCE_FILE}" \
+              --read "${SOURCE_HEADER}" \
+              --read isobus/include/isobus/isobus/can_network_manager.hpp \
+              --file "${TEST_FILE}" \
+              --message "$(cat aider-current-prompt.txt)" \
+              --no-gitignore \
+              --map-tokens 0 \
+              --no-check-update \
+              --no-show-release-notes \
+              --analytics-disable \
+              --chat-history-file "${RUNNER_TEMP}/aider-attempt-${attempt}.chat.md" \
+              --input-history-file "${RUNNER_TEMP}/aider-attempt-${attempt}.input" \
+              --llm-history-file "${RUNNER_TEMP}/aider-attempt-${attempt}.llm" \
+              --no-auto-commits \
+              --no-dirty-commits \
+              --no-pretty \
+              --no-stream \
+              --yes-always \
+              2>&1 | tee "${attempt_dir}/aider.log"
+            aider_status=${PIPESTATUS[0]}
+            set -e
+
+            git diff -- "${TEST_FILE}" > "${attempt_dir}/patch-after-aider.diff" || true
+
+            if [ "${aider_status}" -ne 0 ]; then
+              {
+                echo "La tentative precedente d'Aider a echoue avant validation."
+                echo
+                echo "Sortie Aider :"
+                tail -n 120 "${attempt_dir}/aider.log"
+                echo
+                echo "Corrige le fichier existant sans annuler les enrichissements valides."
+                echo "Respecte toutes les contraintes du prompt initial."
+              } > "${feedback_file}"
+              build_retry_prompt
+              continue
+            fi
+
+            validation_error="${attempt_dir}/validation-error.txt"
+            : > "${validation_error}"
+
+            if ! git diff --quiet -- ':(exclude)test/nmea2000_message_tests.cpp'; then
+              {
+                echo "Aider a modifie un fichier autre que test/nmea2000_message_tests.cpp."
+                git diff -- ':(exclude)test/nmea2000_message_tests.cpp'
+              } > "${validation_error}"
+            elif git diff --quiet -- "${TEST_FILE}"; then
+              echo "Aider n'a pas modifie ${TEST_FILE}." > "${validation_error}"
+            elif ! git diff --quiet -- "${SOURCE_FILE}"; then
+              echo "Aider a modifie le code source de production." > "${validation_error}"
+            elif ! git diff --quiet -- "${SOURCE_HEADER}"; then
+              echo "Aider a modifie le header de production." > "${validation_error}"
+            elif grep -qE \
+              'FastPacketProtocol::(FP_|MAX_PROTOCOL_MESSAGE_LENGTH|PROTOCOL_BYTES_PER_FRAME)' \
+              "${TEST_FILE}"; then
+              echo "Aider a accede a une constante privee de FastPacketProtocol." \
+                > "${validation_error}"
+            elif grep -qE \
+              'get_fast_packet_protocol\(\)[.-]' \
+              "${TEST_FILE}"; then
+              echo "Aider a appele get_fast_packet_protocol sans l index de port CAN 0." \
+                > "${validation_error}"
+            elif grep -qE \
+              'get_fast_packet_protocol\(0\)\.' \
+              "${TEST_FILE}"; then
+              echo "Aider a utilise . au lieu de -> sur le unique_ptr FastPacketProtocol." \
+                > "${validation_error}"
+            fi
+
+            if [ ! -s "${validation_error}" ]; then
+              set +e
+              python3 validate-test-structure.py \
+                > "${attempt_dir}/structure-check.log" 2>&1
+              structure_status=$?
+              set -e
+
+              if [ "${structure_status}" -ne 0 ]; then
+                cp "${attempt_dir}/structure-check.log" "${validation_error}"
+              fi
+            fi
+
+            if [ -s "${validation_error}" ]; then
+              {
+                echo "Le patch de la tentative ${attempt} a echoue au controle structurel."
+                echo
+                cat "${validation_error}"
+                echo
+                echo "Corrige le patch actuel. Ne modifie que ${TEST_FILE}."
+                echo "Ne cree aucun nouveau test et preserve toutes les assertions existantes."
+              } > "${feedback_file}"
+              build_retry_prompt
+              continue
+            fi
+
+            find build -type f \( -name '*.gcda' -o -name '*.gcno' \) -delete
+
+            set +e
+            cmake --build build --parallel \
+              > "${attempt_dir}/build.log" 2>&1
+            build_status=$?
+            set -e
+
+            if [ "${build_status}" -ne 0 ]; then
+              {
+                echo "Le patch de la tentative ${attempt} ne compile pas."
+                echo
+                echo "Erreurs de compilation :"
+                tail -n 160 "${attempt_dir}/build.log"
+                echo
+                echo "Corrige le patch actuel uniquement dans ${TEST_FILE}."
+                echo "N'invente aucune API et preserve les scenarios deja valides."
+              } > "${feedback_file}"
+              build_retry_prompt
+              continue
+            fi
+
+            find build -type f -name '*.gcda' -delete
+
+            set +e
+            (
+              cd build/test
+              ./unit_tests \
+                --gtest_filter="${TARGET_TEST}" \
+                --gtest_color=no
+            ) > "${attempt_dir}/target-test.log" 2>&1
+            target_test_status=$?
+            set -e
+
+            if [ "${target_test_status}" -ne 0 ]; then
+              {
+                echo "Le patch compile mais le test ${TARGET_TEST} echoue."
+                echo
+                echo "Sortie du test :"
+                tail -n 160 "${attempt_dir}/target-test.log"
+                echo
+                echo "Corrige le patch actuel. Le test doit passer sur le code original."
+                echo "Ne supprime et n'affaiblis aucune assertion existante."
+              } > "${feedback_file}"
+              build_retry_prompt
+              continue
+            fi
+
+            rm -f all-tests-after-aider.profraw all-tests-after-aider.profdata
+            find build -type f -name '*.gcda' -delete
+
+            set +e
+            (
+              cd build/test
+              LLVM_PROFILE_FILE="${GITHUB_WORKSPACE}/all-tests-after-aider.profraw" \
+                ./unit_tests --gtest_color=no
+            ) > "${attempt_dir}/full-test.log" 2>&1
+            full_test_status=$?
+            set -e
+
+            if [ "${full_test_status}" -ne 0 ]; then
+              {
+                echo "Le test cible passe mais la suite complete echoue."
+                echo
+                echo "Sortie de la suite complete :"
+                tail -n 180 "${attempt_dir}/full-test.log"
+                echo
+                echo "Corrige le patch actuel sans modifier les autres tests."
+              } > "${feedback_file}"
+              build_retry_prompt
+              continue
+            fi
+
+            if [ ! -s all-tests-after-aider.profraw ]; then
+              {
+                echo "La suite complete passe mais le profil LLVM n'a pas ete genere."
+                echo "Conserve le patch et corrige uniquement ce qui empeche la validation."
+              } > "${feedback_file}"
+              build_retry_prompt
+              continue
+            fi
+
+            llvm-profdata-19 merge \
+              -sparse \
+              all-tests-after-aider.profraw \
+              -o all-tests-after-aider.profdata
+
+            rm -rf mull-results-after-aider
+            mkdir -p mull-results-after-aider
+
+            set +e
+            (
+              cd build/test
+              mull-runner-19 \
+                --allow-surviving \
+                --debug \
+                --timeout 120000 \
+                --coverage-info "${GITHUB_WORKSPACE}/all-tests-after-aider.profdata" \
+                --reporters IDE \
+                --reporters Elements \
+                --report-dir "${GITHUB_WORKSPACE}/mull-results-after-aider" \
+                --report-name nmea2000-fast-packet-after-aider-lines-403-408 \
+                ./unit_tests \
+                --gtest_color=no
+            ) > "${attempt_dir}/mull.log" 2>&1
+            mull_status=$?
+            set -e
+
+            cp "${attempt_dir}/mull.log" \
+              mull-results-after-aider/mull-console.log
+
+            if [ "${mull_status}" -ne 0 ]; then
+              {
+                echo "Mull n'a pas termine correctement apres la tentative ${attempt}."
+                echo
+                tail -n 180 "${attempt_dir}/mull.log"
+                echo
+                echo "Corrige le patch actuel uniquement si l'erreur vient du test."
+              } > "${feedback_file}"
+              build_retry_prompt
+              continue
+            fi
+
+            set +e
+            python3 validate-target-mutant.py \
+              > "${attempt_dir}/mutation-check.log" 2>&1
+            mutation_status=$?
+            set -e
+
+            if [ "${mutation_status}" -ne 0 ]; then
+              {
+                echo "Le patch compile et tous les tests passent, mais au moins un mutant cible survit."
+                echo
+                cat "${attempt_dir}/mutation-check.log"
+                echo
+                echo "Analyse pourquoi les scenarios actuels ne distinguent pas correctement les conditions"
+                echo "la condition messageLength > 223 de messageLength >= 223, ou messageLength <= 8 de messageLength < 8."
+                echo "Corrige le patch existant avec une verification deterministe de la"
+                echo "frontieres de longueur recue 223 acceptee et 8 refusee, sans modifier le code de production."
+              } > "${feedback_file}"
+              build_retry_prompt
+              continue
+            fi
+
+            cp "${attempt_dir}/target-test.log" nmea2000-test-after-aider.log
+            cp "${attempt_dir}/full-test.log" all-tests-after-aider.log
+            git diff --check
+            git diff -- "${TEST_FILE}" | tee aider-mutants-403-408.patch
+
+            echo "Aider succeeded on attempt ${attempt}."
+            echo "${attempt}" > aider-successful-attempt.txt
+            success=true
+            break
+          done
+
+          if [ "${success}" != true ]; then
+            echo "Aider failed after ${MAX_AIDER_ATTEMPTS} attempts." >&2
+            echo "Review aider-attempts/ and aider-current-prompt.txt." >&2
+            exit 1
+          fi
+
+      - name: Publish summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## NMEA2000 Fast Packet mutants lines 403 and 408"
+            echo
+            if [ -f aider-successful-attempt.txt ]; then
+              echo "Successful Aider attempt: $(cat aider-successful-attempt.txt)"
+            else
+              echo "No Aider attempt completed all validations."
+            fi
+            echo
+            echo '```text'
+            cat post-aider-mutation-summary.txt 2>/dev/null || \
+              echo "Final mutation summary was not generated."
+            echo '```'
+            echo
+            echo "## Authorized patch"
+            echo
+            echo '```diff'
+            cat aider-mutants-403-408.patch 2>/dev/null || \
+              echo "A validated Aider patch was not generated."
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mull-nmea2000-fast-packet-mutants-403-408-aider-loop-v1
+          path: |
+            mull-config.yml
+            all-tests-baseline.log
+            all-tests.profdata
+            mull-results-before-aider/
+            agent-mutants-403-408-context.json
+            baseline-test-count.txt
+            validate-test-structure.py
+            validate-target-mutant.py
+            aider-initial-prompt.txt
+            aider-current-prompt.txt
+            aider-feedback.txt
+            aider-attempts/
+            aider-successful-attempt.txt
+            aider-mutants-403-408.patch
+            nmea2000-test-after-aider.log
+            all-tests-after-aider.log
+            all-tests-after-aider.profdata
+            mull-results-after-aider/
+            post-aider-mutation-summary.txt
+          if-no-files-found: warn
+          retention-days: 30
