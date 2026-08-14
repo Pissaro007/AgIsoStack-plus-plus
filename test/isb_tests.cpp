@@ -3,6 +3,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/hardware_integration/virtual_can_plugin.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/can_stack_logger.hpp"
 #include "isobus/isobus/isobus_shortcut_button_interface.hpp"
 #include "isobus/utility/system_timing.hpp"
 
@@ -76,6 +77,21 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonRxTests)
 	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::PermitAllImplementsToOperationOn, interfaceUnderTest.get_state());
 
 	// Send increased, incorrect transition count
+	// Set up test logger to verify ERROR log is emitted when transitioning to StopImplementOperations
+	class TestLogger : public isobus::CANStackLogger
+	{
+	public:
+		isobus::CANStackLogger::LoggingLevel lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
+		void sink_CAN_stack_log(isobus::CANStackLogger::LoggingLevel level, const std::string &) override
+		{
+			lastLogLevel = level;
+		}
+	};
+	TestLogger testLogger;
+	auto originalLogLevel = isobus::CANStackLogger::get_log_level();
+	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
+	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
+
 	testFrame.identifier = 0x18FD0274;
 	testFrame.data[0] = 0xFF;
 	testFrame.data[1] = 0xFF;
@@ -88,6 +104,12 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonRxTests)
 	CANNetworkManager::CANNetwork.process_receive_can_message_frame(testFrame);
 	CANNetworkManager::CANNetwork.update();
 	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::StopImplementOperations, interfaceUnderTest.get_state());
+
+	// Verify ERROR log was emitted (mutant would log INFO instead)
+	EXPECT_EQ(isobus::CANStackLogger::LoggingLevel::Error, testLogger.lastLogLevel);
+
+	isobus::CANStackLogger::set_can_stack_logger_sink(nullptr);
+	isobus::CANStackLogger::set_log_level(originalLogLevel);
 
 	// Test reset of state as counter is back to normal
 	testFrame.identifier = 0x18FD0274;
@@ -228,10 +250,28 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonTxTests)
 	interfaceUnderTest.initialize();
 	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::PermitAllImplementsToOperationOn, interfaceUnderTest.get_state());
 
+	// Set up test logger to verify ERROR log is emitted when setting StopImplementOperations
+	class TestLogger : public isobus::CANStackLogger
+	{
+	public:
+		isobus::CANStackLogger::LoggingLevel lastLogLevel = isobus::CANStackLogger::LoggingLevel::Info;
+		void sink_CAN_stack_log(isobus::CANStackLogger::LoggingLevel level, const std::string &) override
+		{
+			lastLogLevel = level;
+		}
+	};
+	TestLogger testLogger;
+	auto originalLogLevel = isobus::CANStackLogger::get_log_level();
+	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
+	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
+
 	interfaceUnderTest.set_stop_all_implement_operations_state(ShortcutButtonInterface::StopAllImplementOperationsState::StopImplementOperations);
 	interfaceUnderTest.update();
 	time_source.update_for_ms(5);
 	EXPECT_TRUE(serverPlugin.read_frame(testFrame));
+
+	// Verify ERROR log was emitted (mutant would log INFO instead)
+	EXPECT_EQ(isobus::CANStackLogger::LoggingLevel::Error, testLogger.lastLogLevel);
 
 	ASSERT_TRUE(testFrame.isExtendedFrame);
 	ASSERT_EQ(testFrame.dataLength, 8);
@@ -246,6 +286,20 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonTxTests)
 	EXPECT_EQ(testFrame.data[7], 0xFC);
 
 	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::StopImplementOperations, interfaceUnderTest.get_state());
+
+	// Trigger a second transmission by changing state to Permit
+	interfaceUnderTest.set_stop_all_implement_operations_state(ShortcutButtonInterface::StopAllImplementOperationsState::PermitAllImplementsToOperationOn);
+	interfaceUnderTest.update();
+	time_source.update_for_ms(5);
+
+	ASSERT_TRUE(serverPlugin.read_frame(testFrame));
+
+	EXPECT_EQ(testFrame.data[6], 0x01);
+	EXPECT_EQ(testFrame.data[7], 0xFD);
+	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::PermitAllImplementsToOperationOn, interfaceUnderTest.get_state());
+
+	isobus::CANStackLogger::set_can_stack_logger_sink(nullptr);
+	isobus::CANStackLogger::set_log_level(originalLogLevel);
 
 	CANHardwareInterface::stop();
 	CANNetworkManager::CANNetwork.deactivate_control_function(internalECU);
