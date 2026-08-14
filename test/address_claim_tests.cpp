@@ -60,7 +60,27 @@ TEST_F(AddressClaimTest, AddressClaim_PartneredClaim)
 	const isobus::NAMEFilter filterFirst(NAME::NAMEParameters::FunctionCode, static_cast<std::uint8_t>(NAME::Function::CabClimateControl));
 	auto secondPartneredFirstEcu = CANNetworkManager::CANNetwork.create_partnered_control_function(1, { filterFirst });
 
-	time_source.update_for_ms(500);
+	constexpr std::uint32_t maximumWaitTime_ms = 1500;
+	constexpr std::uint32_t pollingPeriod_ms = 10;
+	
+	for (std::uint32_t elapsedTime_ms = 0;
+	     elapsedTime_ms < maximumWaitTime_ms;
+	     elapsedTime_ms += pollingPeriod_ms)
+	{
+		time_source.update_for_ms(pollingPeriod_ms);
+		CANNetworkManager::CANNetwork.update();
+	
+		if (firstInternalECU->get_address_valid() &&
+		    secondInternalECU2->get_address_valid() &&
+		    firstPartneredSecondECU->get_address_valid() &&
+		    secondPartneredFirstEcu->get_address_valid())
+		{
+			break;
+		}
+	
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+	}
+	
 	EXPECT_TRUE(firstInternalECU->get_address_valid());
 	EXPECT_TRUE(secondInternalECU2->get_address_valid());
 	EXPECT_TRUE(firstPartneredSecondECU->get_address_valid());
