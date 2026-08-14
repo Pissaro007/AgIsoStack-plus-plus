@@ -266,6 +266,17 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonTxTests)
 
 	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::StopImplementOperations, interfaceUnderTest.get_state());
 
+	// Trigger a second transmission by changing state to Permit
+	interfaceUnderTest.set_stop_all_implement_operations_state(ShortcutButtonInterface::StopAllImplementOperationsState::PermitAllImplementsToOperationOn);
+	interfaceUnderTest.update();
+	time_source.update_for_ms(5);
+
+	ASSERT_TRUE(serverPlugin.read_frame(testFrame));
+
+	EXPECT_EQ(testFrame.data[6], 0x01);
+	EXPECT_EQ(testFrame.data[7], 0xFD);
+	EXPECT_EQ(ShortcutButtonInterface::StopAllImplementOperationsState::PermitAllImplementsToOperationOn, interfaceUnderTest.get_state());
+
 	isobus::CANStackLogger::set_can_stack_logger_sink(nullptr);
 	isobus::CANStackLogger::set_log_level(originalLogLevel);
 	
