@@ -1,5 +1,7 @@
 name: Mull - Single Source File - All Tests and Covering Tests
 
+#rerun #1
+
 on:
   workflow_dispatch:
     inputs:
