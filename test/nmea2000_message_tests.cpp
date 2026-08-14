@@ -464,6 +464,12 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 	});
 
 	EXPECT_FALSE(fastPacketProtocol.send_multipacket_message(0x1F014, singleFramePayload, static_cast<std::uint8_t>(sizeof(singleFramePayload)), testECU, nullptr));	
+
+	// Fast Packet must accept a payload of exactly MAX_PROTOCOL_MESSAGE_LENGTH (223 bytes)
+	// This kills the cxx_gt_to_ge mutant at line 153 of nmea2000_fast_packet_protocol.cpp
+	std::vector<std::uint8_t> maxLengthPayload(223, 0xAA);
+	EXPECT_TRUE(fastPacketProtocol.send_multipacket_message(0x1F014, maxLengthPayload.data(), static_cast<std::uint8_t>(maxLengthPayload.size()), testECU, nullptr));
+	fastPacketProtocol.update();
 	
 	{
 		// Test COG/SOG
