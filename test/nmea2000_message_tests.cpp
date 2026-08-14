@@ -470,6 +470,16 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 	std::vector<std::uint8_t> maxLengthPayload(223, 0xAA);
 	EXPECT_TRUE(fastPacketProtocol.send_multipacket_message(0x1F014, maxLengthPayload.data(), static_cast<std::uint8_t>(maxLengthPayload.size()), testECU, nullptr));
 	fastPacketProtocol.update();
+
+	// Fast Packet must accept the minimum PGN boundary (0x1F000)
+	// This kills the cxx_lt_to_le mutant at line 163 of nmea2000_fast_packet_protocol.cpp
+	EXPECT_TRUE(fastPacketProtocol.send_multipacket_message(0x1F000, maxLengthPayload.data(), static_cast<std::uint8_t>(maxLengthPayload.size()), testECU, nullptr));
+	fastPacketProtocol.update();
+
+	// Fast Packet must accept the maximum PGN boundary (0x1FFFF)
+	// This kills the cxx_gt_to_ge mutant at line 163 of nmea2000_fast_packet_protocol.cpp
+	EXPECT_TRUE(fastPacketProtocol.send_multipacket_message(0x1FFFF, maxLengthPayload.data(), static_cast<std::uint8_t>(maxLengthPayload.size()), testECU, nullptr));
+	fastPacketProtocol.update();
 	
 	{
 		// Test COG/SOG
