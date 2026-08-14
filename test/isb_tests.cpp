@@ -264,7 +264,7 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonTxTests)
 	auto originalLogLevel = isobus::CANStackLogger::get_log_level();
 	isobus::CANStackLogger::set_log_level(isobus::CANStackLogger::LoggingLevel::Debug);
 	isobus::CANStackLogger::set_can_stack_logger_sink(&testLogger);
-	
+
 	interfaceUnderTest.set_stop_all_implement_operations_state(ShortcutButtonInterface::StopAllImplementOperationsState::StopImplementOperations);
 	interfaceUnderTest.update();
 	time_source.update_for_ms(5);
@@ -272,7 +272,7 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonTxTests)
 
 	// Verify ERROR log was emitted (mutant would log INFO instead)
 	EXPECT_EQ(isobus::CANStackLogger::LoggingLevel::Error, testLogger.lastLogLevel);
-	
+
 	ASSERT_TRUE(testFrame.isExtendedFrame);
 	ASSERT_EQ(testFrame.dataLength, 8);
 	EXPECT_EQ(CANIdentifier(testFrame.identifier).get_parameter_group_number(), 0xFD02);
@@ -300,7 +300,7 @@ TEST_F(IsobusShortcutButtonTest, ShortcutButtonTxTests)
 
 	isobus::CANStackLogger::set_can_stack_logger_sink(nullptr);
 	isobus::CANStackLogger::set_log_level(originalLogLevel);
-	
+
 	CANHardwareInterface::stop();
 	CANNetworkManager::CANNetwork.deactivate_control_function(internalECU);
 }
