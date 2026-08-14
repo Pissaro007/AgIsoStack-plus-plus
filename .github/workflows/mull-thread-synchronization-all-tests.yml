@@ -5,7 +5,7 @@ on:
 
   push:
     branches:
-      - quality/mull-mutation-testing-poc
+      - quality/#your_branch#
     paths:
       - .github/workflows/mull-thread-synchronization-all-tests.yml
       - utility/include/isobus/utility/thread_synchronization.hpp
