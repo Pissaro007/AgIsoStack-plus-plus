@@ -598,6 +598,78 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
 			0x1FFFF, callbackMax, &contextMax, nullptr);
 	}
+
+	// Test Fast Packet session history and sequence number independence per PGN
+	// This kills the cxx_eq_to_ne mutants at lines 221 and 261 of nmea2000_fast_packet_protocol.cpp
+	{
+		struct CapturedFrame
+		{
+			std::uint32_t pgn;
+			std::uint8_t firstByte;
+			bool isFirstFrame;
+		};
+		std::vector<CapturedFrame> capturedFrames;
+
+		FastPacketProtocol historyTestProtocol([&capturedFrames](std::uint32_t parameterGroupNumber, CANDataSpan data, std::shared_ptr<InternalControlFunction> source, std::shared_ptr<ControlFunction> destination, CANIdentifier::CANPriority priority) {
+			if (data.size() > 0)
+			{
+				std::uint8_t frameCounter = data[0] & 0x1F;
+				capturedFrames.push_back({parameterGroupNumber, data[0], frameCounter == 0});
+			}
+			return true;
+		});
+
+		std::vector<std::uint8_t> testPayload(20, 0xAA); // 20 bytes > 8, so fast packet is used
+
+		// Session 1: PGN 0x1F014 - first session for this PGN, sequence should be 0
+		EXPECT_TRUE(historyTestProtocol.send_multipacket_message(0x1F014, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		historyTestProtocol.update();
+
+		// Session 2: PGN 0x1F015 - first session for this PGN, sequence should also be 0 (independent history)
+		EXPECT_TRUE(historyTestProtocol.send_multipacket_message(0x1F015, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		historyTestProtocol.update();
+
+		// Session 3: PGN 0x1F014 again - second session for this PGN, sequence should be 1
+		EXPECT_TRUE(historyTestProtocol.send_multipacket_message(0x1F014, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		historyTestProtocol.update();
+
+		// Session 4: PGN 0x1F015 again - second session for this PGN, sequence should be 1
+		// This kills the cxx_eq_to_ne mutant at line 221: if PGN comparison is mutated to !=,
+		// session 2 incorrectly updates PGN 0x1F014's history entry, so PGN 0x1F015 has no history entry.
+		// Session 4 would then get sequence 0 instead of 1.
+		EXPECT_TRUE(historyTestProtocol.send_multipacket_message(0x1F015, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		historyTestProtocol.update();
+
+		// Verify sequence numbers
+		// Extract sequence number from bits 5-7 of first byte: (firstByte >> 5) & 0x07
+		std::uint8_t seq1 = 0xFF, seq2 = 0xFF, seq3 = 0xFF, seq4 = 0xFF;
+		int pgn14Count = 0;
+		int pgn15Count = 0;
+		for (const auto& f : capturedFrames)
+		{
+			if (f.pgn == 0x1F014 && f.isFirstFrame)
+			{
+				if (pgn14Count == 0)
+					seq1 = (f.firstByte >> 5) & 0x07;
+				else if (pgn14Count == 1)
+					seq3 = (f.firstByte >> 5) & 0x07;
+				pgn14Count++;
+			}
+			else if (f.pgn == 0x1F015 && f.isFirstFrame)
+			{
+				if (pgn15Count == 0)
+					seq2 = (f.firstByte >> 5) & 0x07;
+				else if (pgn15Count == 1)
+					seq4 = (f.firstByte >> 5) & 0x07;
+				pgn15Count++;
+			}
+		}
+
+		EXPECT_EQ(0u, seq1) << "First session for PGN 0x1F014 should have sequence number 0";
+		EXPECT_EQ(0u, seq2) << "First session for PGN 0x1F015 should have sequence number 0 (independent history)";
+		EXPECT_EQ(1u, seq3) << "Second session for PGN 0x1F014 should have sequence number 1";
+		EXPECT_EQ(1u, seq4) << "Second session for PGN 0x1F015 should have sequence number 1 (independent history)";
+	}
 	
 	{
 		// Test COG/SOG
