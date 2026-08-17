@@ -514,7 +514,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		FastPacketReceiveContext contextMin;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
-			0x1F000, callbackMin, &contextMin, nullptr);
+			0x1F000, fast_packet_receive_callback, &contextMin, nullptr);
 
 		// Create a 20-byte Fast Packet message for PGN 0x1F000
 		std::vector<std::uint8_t> payloadMin(20, 0xAA);
@@ -548,7 +548,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		EXPECT_EQ(0x1F000u, contextMin.receivedPgn);
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
-			0x1F000, callbackMin, &contextMin, nullptr);
+			0x1F000, fast_packet_receive_callback, &contextMin, nullptr);
 	}
 
 	// Test Fast Packet reception at maximum PGN boundary (0x1FFFF) - kills cxx_gt_to_ge mutant at line 275
@@ -556,7 +556,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		FastPacketReceiveContext contextMax;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
-			0x1FFFF, callbackMax, &contextMax, nullptr);
+			0x1FFFF, fast_packet_receive_callback, &contextMax, nullptr);
 
 		// Create a 20-byte Fast Packet message for PGN 0x1FFFF
 		std::vector<std::uint8_t> payloadMax(20, 0xBB);
@@ -590,7 +590,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		EXPECT_EQ(0x1FFFFu, contextMax.receivedPgn);
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
-			0x1FFFF, callbackMax, &contextMax, nullptr);
+			0x1FFFF, fast_packet_receive_callback, &contextMax, nullptr);
 	}
 
 	// Test Fast Packet session history and sequence number independence per PGN
@@ -721,7 +721,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		FastPacketReceiveContext contextMaxLen;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
-			0x1F010, callbackMaxLen, &contextMaxLen, nullptr);
+			0x1F010, fast_packet_receive_callback, &contextMaxLen, nullptr);
 
 		// Create a 223-byte Fast Packet message for PGN 0x1F010
 		std::vector<std::uint8_t> payloadMaxLen(223);
@@ -761,7 +761,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		EXPECT_EQ(223u, contextMaxLen.receivedData.size());
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
-			0x1F010, callbackMaxLen, &contextMaxLen, nullptr);
+			0x1F010, fast_packet_receive_callback, &contextMaxLen, nullptr);
 	}
 
 	// Test Fast Packet reception with invalid length (8 bytes) - kills cxx_le_to_lt mutant at line 408
@@ -769,7 +769,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		FastPacketReceiveContext contextInvalidLen;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
-			0x1F011, callbackInvalidLen, &contextInvalidLen, nullptr);
+			0x1F011, fast_packet_receive_callback, &contextInvalidLen, nullptr);
 
 		// Create an 8-byte Fast Packet message for PGN 0x1F011 (should be rejected)
 		std::vector<std::uint8_t> payloadInvalidLen(8, 0xAA);
@@ -799,7 +799,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		EXPECT_FALSE(contextInvalidLen.callbackHit);
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
-			0x1F011, callbackInvalidLen, &contextInvalidLen, nullptr);
+			0x1F011, fast_packet_receive_callback, &contextInvalidLen, nullptr);
 	}
 
 	// Test Fast Packet reception partial assembly - kills cxx_ge_to_lt mutant at line 364
@@ -812,7 +812,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		FastPacketReceiveContext contextPartial;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
-			0x1F020, callbackPartial, &contextPartial, nullptr);
+			0x1F020, fast_packet_receive_callback, &contextPartial, nullptr);
 
 		// Create a 16-byte Fast Packet message for PGN 0x1F020
 		std::vector<std::uint8_t> payloadPartial(16);
@@ -866,7 +866,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		}
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
-			0x1F020, callbackPartial, &contextPartial, nullptr);
+			0x1F020, fast_packet_receive_callback, &contextPartial, nullptr);
 	}
 
 	// Test Fast Packet RX session timeout boundary - kills cxx_gt_to_ge mutant at line 478
@@ -876,7 +876,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		FastPacketReceiveContext contextTimeout;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
-			0x1F030, callbackTimeout, &contextTimeout, nullptr);
+			0x1F030, fast_packet_receive_callback, &contextTimeout, nullptr);
 
 		// Create a 15-byte Fast Packet message for PGN 0x1F030 (3 frames: 6 + 7 + 2)
 		std::vector<std::uint8_t> payloadTimeout(15);
@@ -930,7 +930,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		}
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
-			0x1F030, callbackTimeout, &contextTimeout, nullptr);
+			0x1F030, fast_packet_receive_callback, &contextTimeout, nullptr);
 	}
 
 	{
