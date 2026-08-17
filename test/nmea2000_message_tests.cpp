@@ -842,7 +842,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 			0x1F011, callbackInvalidLen, &contextInvalidLen, nullptr);
 	}
 
-	+	// Test Fast Packet reception partial assembly - kills cxx_ge_to_lt mutant at line 364
+	// Test Fast Packet reception partial assembly - kills cxx_ge_to_lt mutant at line 364
 	// The mutant changes the completion condition from (transferred >= length) to (transferred < length).
 	// With a 16-byte message (3 frames: 6 + 7 + 3 bytes):
 	// - After frame 0: transferred=6, length=16, 6>=16 is false, 6<16 is true -> mutant would complete incorrectly
