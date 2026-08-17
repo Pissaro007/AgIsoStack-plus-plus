@@ -670,7 +670,127 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		EXPECT_EQ(1u, seq3) << "Second session for PGN 0x1F014 should have sequence number 1";
 		EXPECT_EQ(1u, seq4) << "Second session for PGN 0x1F015 should have sequence number 1 (independent history)";
 	}
-	
+
+	// Test Fast Packet reception with maximum valid length (223 bytes) - kills cxx_gt_to_ge mutant at line 403
+	{
+		struct CallbackContext
+		{
+			bool callbackHit = false;
+			std::uint32_t receivedPgn = 0;
+			std::size_t receivedLength = 0;
+		} contextMaxLen;
+
+		auto callbackMaxLen = [](const CANMessage &msg, void *parent)
+		{
+			if (parent != nullptr)
+			{
+				auto *ctx = static_cast<CallbackContext *>(parent);
+				ctx->callbackHit = true;
+				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
+				ctx->receivedLength = msg.get_data().size();
+			}
+		};
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+			0x1F010, callbackMaxLen, &contextMaxLen, nullptr);
+
+		// Create a 223-byte Fast Packet message for PGN 0x1F010
+		std::vector<std::uint8_t> payloadMaxLen(223);
+		for (std::size_t i = 0; i < payloadMaxLen.size(); ++i)
+		{
+			payloadMaxLen[i] = static_cast<std::uint8_t>(i & 0xFF);
+		}
+
+		CANMessageFrame frameMaxLen = {};
+		frameMaxLen.isExtendedFrame = true;
+		frameMaxLen.channel = 0;
+		frameMaxLen.dataLength = CAN_DATA_LENGTH;
+
+		// Frame 0: frame_counter=0, length=223, 6 bytes data
+		frameMaxLen.identifier = 0x19F01052; // PGN 0x1F010, source 0x52
+		frameMaxLen.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameMaxLen.data[1] = 223; // total length
+		memcpy(&frameMaxLen.data[2], payloadMaxLen.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMaxLen);
+
+		// Frames 1-31: frame_counter=1 to 31, 7 bytes data each
+		for (std::uint8_t frameIdx = 1; frameIdx <= 31; ++frameIdx)
+		{
+			frameMaxLen.data[0] = frameIdx; // sequence=0, frame_counter=frameIdx
+			std::size_t srcOffset = 6 + (frameIdx - 1) * 7;
+			std::size_t bytesToCopy = std::min<std::size_t>(7, payloadMaxLen.size() - srcOffset);
+			memcpy(&frameMaxLen.data[1], payloadMaxLen.data() + srcOffset, bytesToCopy);
+			// Fill remaining with 0xFF
+			for (std::size_t i = bytesToCopy; i < 7; ++i)
+			{
+				frameMaxLen.data[1 + i] = 0xFF;
+			}
+			CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMaxLen);
+		}
+
+		CANNetworkManager::CANNetwork.update();
+
+		EXPECT_TRUE(contextMaxLen.callbackHit);
+		EXPECT_EQ(0x1F010u, contextMaxLen.receivedPgn);
+		EXPECT_EQ(223u, contextMaxLen.receivedLength);
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+			0x1F010, callbackMaxLen, &contextMaxLen, nullptr);
+	}
+
+	// Test Fast Packet reception with invalid length (8 bytes) - kills cxx_le_to_lt mutant at line 408
+	{
+		struct CallbackContext
+		{
+			bool callbackHit = false;
+		} contextInvalidLen;
+
+		auto callbackInvalidLen = [](const CANMessage &msg, void *parent)
+		{
+			if (parent != nullptr)
+			{
+				auto *ctx = static_cast<CallbackContext *>(parent);
+				ctx->callbackHit = true;
+			}
+		};
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+			0x1F011, callbackInvalidLen, &contextInvalidLen, nullptr);
+
+		// Create an 8-byte Fast Packet message for PGN 0x1F011 (should be rejected)
+		std::vector<std::uint8_t> payloadInvalidLen(8, 0xAA);
+
+		CANMessageFrame frameInvalidLen = {};
+		frameInvalidLen.isExtendedFrame = true;
+		frameInvalidLen.channel = 0;
+		frameInvalidLen.dataLength = CAN_DATA_LENGTH;
+
+		// Frame 0: frame_counter=0, length=8, 6 bytes data
+		frameInvalidLen.identifier = 0x19F01152; // PGN 0x1F011, source 0x52
+		frameInvalidLen.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameInvalidLen.data[1] = 8; // total length (INVALID - should be rejected)
+		memcpy(&frameInvalidLen.data[2], payloadInvalidLen.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameInvalidLen);
+
+		// Frame 1: frame_counter=1, 2 bytes data (would complete the 8 bytes if session was created)
+		frameInvalidLen.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&frameInvalidLen.data[1], payloadInvalidLen.data() + 6, 2);
+		// Fill remaining with 0xFF
+		for (std::size_t i = 2; i < 7; ++i)
+		{
+			frameInvalidLen.data[1 + i] = 0xFF;
+		}
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameInvalidLen);
+
+		CANNetworkManager::CANNetwork.update();
+
+		// Callback should NOT be hit because 8 bytes is invalid for Fast Packet
+		EXPECT_FALSE(contextInvalidLen.callbackHit);
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+			0x1F011, callbackInvalidLen, &contextInvalidLen, nullptr);
+	}
+
 	{
 		// Test COG/SOG
 		NMEA2000MessageInterface interfaceUnderTest(testECU, true, false, false, false, false, false, false);
