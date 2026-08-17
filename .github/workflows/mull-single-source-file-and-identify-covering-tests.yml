@@ -12,7 +12,7 @@ on:
 
   push:
     branches:
-      - quality/mull-nmea2000-fast-packet-protocol
+      - quality/quality/refactor-nmea2000-fast-packet-tests
     paths:
       - .github/workflows/mull-single-source-file-and-identify-covering-tests.yml
 
