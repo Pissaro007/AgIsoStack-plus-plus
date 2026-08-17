@@ -671,6 +671,57 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		EXPECT_EQ(1u, seq4) << "Second session for PGN 0x1F015 should have sequence number 1 (independent history)";
 	}
 
+	// Test Fast Packet transmission frame counting - kills cxx_lt_to_le mutant at line 488
+	// The mutant changes loop condition from i < remaining to i <= remaining.
+	// With 2 total frames (13 bytes payload), initial remaining=2:
+	// - Original: i=0<2 sends frame 0, remaining becomes 1, i=1<1 false -> 1 frame sent
+	// - Mutant: i=0<=2 sends frame 0, remaining becomes 1, i=1<=1 sends frame 1 -> 2 frames sent
+	{
+		struct CapturedTxFrame
+		{
+			std::uint32_t pgn;
+			std::uint8_t firstByte; // Contains sequence (bits 5-7) and frame_counter (bits 0-4)
+			std::vector<std::uint8_t> payload;
+		};
+		std::vector<CapturedTxFrame> capturedTxFrames;
+
+		FastPacketProtocol txTestProtocol([&capturedTxFrames](std::uint32_t parameterGroupNumber, CANDataSpan data, std::shared_ptr<InternalControlFunction> source, std::shared_ptr<ControlFunction> destination, CANIdentifier::CANPriority priority) {
+			CapturedTxFrame frame;
+			frame.pgn = parameterGroupNumber;
+			if (data.size() > 0)
+			{
+				frame.firstByte = data[0];
+				frame.payload.assign(data.begin() + 1, data.end());
+			}
+			capturedTxFrames.push_back(std::move(frame));
+			return true;
+		});
+
+		// 13 bytes payload: first frame carries 6 bytes, second frame carries 7 bytes = 2 frames total
+		std::vector<std::uint8_t> testPayload(13);
+		for (std::size_t i = 0; i < testPayload.size(); ++i)
+		{
+			testPayload[i] = static_cast<std::uint8_t>(0x10 + i);
+		}
+
+		EXPECT_TRUE(txTestProtocol.send_multipacket_message(0x1F020, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		txTestProtocol.update();
+
+		// Original code sends only frame 0 in first update() call (remaining goes 2->1, loop exits)
+		// Mutant would send both frame 0 and frame 1 in first update() call
+		ASSERT_EQ(1u, capturedTxFrames.size()) << "Expected exactly 1 frame in first update for 13-byte payload (2 frames total)";
+
+		// Verify frame 0: firstByte=0x00 (seq=0, cnt=0), payload[0]=length=13, payload[1..6]=data[0..5]
+		EXPECT_EQ(0x1F020u, capturedTxFrames[0].pgn);
+		EXPECT_EQ(0x00, capturedTxFrames[0].firstByte); // seq=0, frame_counter=0
+		ASSERT_EQ(7u, capturedTxFrames[0].payload.size()); // length byte + 6 data bytes
+		EXPECT_EQ(13, capturedTxFrames[0].payload[0]); // message length
+		for (std::size_t j = 0; j < 6; ++j)
+		{
+			EXPECT_EQ(testPayload[j], capturedTxFrames[0].payload[1 + j]) << "Frame 0 payload byte " << j;
+		}
+	}
+
 	// Test Fast Packet reception with maximum valid length (223 bytes) - kills cxx_gt_to_ge mutant at line 403
 	{
 		struct CallbackContext
