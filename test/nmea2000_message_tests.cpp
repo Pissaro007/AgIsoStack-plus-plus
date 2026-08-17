@@ -842,6 +842,94 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 			0x1F011, callbackInvalidLen, &contextInvalidLen, nullptr);
 	}
 
+	+	// Test Fast Packet reception partial assembly - kills cxx_ge_to_lt mutant at line 364
+	// The mutant changes the completion condition from (transferred >= length) to (transferred < length).
+	// With a 16-byte message (3 frames: 6 + 7 + 3 bytes):
+	// - After frame 0: transferred=6, length=16, 6>=16 is false, 6<16 is true -> mutant would complete incorrectly
+	// - After frame 1: transferred=13, length=16, 13>=16 is false, 13<16 is true -> mutant would complete incorrectly
+	// - After frame 2: transferred=16, length=16, 16>=16 is true, 16<16 is false -> both correct
+	{
+		struct CallbackContext
+		{
+			bool callbackHit = false;
+			std::uint32_t receivedPgn = 0;
+			std::size_t receivedLength = 0;
+			std::vector<std::uint8_t> receivedData;
+		} contextPartial;
+
+		auto callbackPartial = [](const CANMessage &msg, void *parent)
+		{
+			if (parent != nullptr)
+			{
+				auto *ctx = static_cast<CallbackContext *>(parent);
+				ctx->callbackHit = true;
+				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
+				ctx->receivedLength = msg.get_data().size();
+				ctx->receivedData.assign(msg.get_data().begin(), msg.get_data().end());
+			}
+		};
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+			0x1F020, callbackPartial, &contextPartial, nullptr);
+
+		// Create a 16-byte Fast Packet message for PGN 0x1F020
+		std::vector<std::uint8_t> payloadPartial(16);
+		for (std::size_t i = 0; i < payloadPartial.size(); ++i)
+		{
+			payloadPartial[i] = static_cast<std::uint8_t>(0x10 + i);
+		}
+
+		CANMessageFrame framePartial = {};
+		framePartial.isExtendedFrame = true;
+		framePartial.channel = 0;
+		framePartial.dataLength = CAN_DATA_LENGTH;
+
+		// Frame 0: frame_counter=0, length=16, 6 bytes data (indices 0-5)
+		framePartial.identifier = 0x19F02052; // PGN 0x1F020, source 0x52
+		framePartial.data[0] = 0x00; // sequence=0, frame_counter=0
+		framePartial.data[1] = 16; // total length
+		memcpy(&framePartial.data[2], payloadPartial.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(framePartial);
+		CANNetworkManager::CANNetwork.update();
+
+		// After first frame (6 bytes), callback should NOT be hit
+		EXPECT_FALSE(contextPartial.callbackHit);
+
+		// Frame 1: frame_counter=1, 7 bytes data (indices 6-12)
+		framePartial.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&framePartial.data[1], payloadPartial.data() + 6, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(framePartial);
+		CANNetworkManager::CANNetwork.update();
+
+		// After second frame (13 bytes), callback should NOT be hit
+		// This kills the cxx_ge_to_lt mutant at line 364 which would incorrectly complete when transferred < length
+		EXPECT_FALSE(contextPartial.callbackHit);
+
+		// Frame 2: frame_counter=2, 3 bytes data (indices 13-15) + 4 bytes padding
+		framePartial.data[0] = 0x02; // sequence=0, frame_counter=2
+		memcpy(&framePartial.data[1], payloadPartial.data() + 13, 3);
+		// Fill remaining with 0xFF
+		for (std::size_t i = 3; i < 7; ++i)
+		{
+			framePartial.data[1 + i] = 0xFF;
+		}
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(framePartial);
+		CANNetworkManager::CANNetwork.update();
+
+		// After third frame (16 bytes), callback should be hit exactly once
+		EXPECT_TRUE(contextPartial.callbackHit);
+		EXPECT_EQ(0x1F020u, contextPartial.receivedPgn);
+		EXPECT_EQ(16u, contextPartial.receivedLength);
+		ASSERT_EQ(16u, contextPartial.receivedData.size());
+		for (std::size_t i = 0; i < payloadPartial.size(); ++i)
+		{
+			EXPECT_EQ(payloadPartial[i], contextPartial.receivedData[i]) << "Byte " << i;
+		}
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+			0x1F020, callbackPartial, &contextPartial, nullptr);
+	}
+
 	{
 		// Test COG/SOG
 		NMEA2000MessageInterface interfaceUnderTest(testECU, true, false, false, false, false, false, false);
