@@ -930,6 +930,91 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 			0x1F020, callbackPartial, &contextPartial, nullptr);
 	}
 
+	// Test Fast Packet RX session timeout boundary - kills cxx_gt_to_ge mutant at line 478
+	// The mutant changes timeout condition from > to >=. At exactly FP_TIMEOUT_MS (750ms),
+	// normal code keeps session alive, mutant closes it.
+	{
+		struct CallbackContext
+		{
+			bool callbackHit = false;
+			std::uint32_t receivedPgn = 0;
+			std::size_t receivedLength = 0;
+			std::vector<std::uint8_t> receivedData;
+		} contextTimeout;
+
+		auto callbackTimeout = [](const CANMessage &msg, void *parent)
+		{
+			if (parent != nullptr)
+			{
+				auto *ctx = static_cast<CallbackContext *>(parent);
+				ctx->callbackHit = true;
+				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
+				ctx->receivedLength = msg.get_data().size();
+				ctx->receivedData.assign(msg.get_data().begin(), msg.get_data().end());
+			}
+		};
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+			0x1F030, callbackTimeout, &contextTimeout, nullptr);
+
+		// Create a 15-byte Fast Packet message for PGN 0x1F030 (3 frames: 6 + 7 + 2)
+		std::vector<std::uint8_t> payloadTimeout(15);
+		for (std::size_t i = 0; i < payloadTimeout.size(); ++i)
+		{
+			payloadTimeout[i] = static_cast<std::uint8_t>(0xA0 + i);
+		}
+
+		CANMessageFrame frameTimeout = {};
+		frameTimeout.isExtendedFrame = true;
+		frameTimeout.channel = 0;
+		frameTimeout.dataLength = CAN_DATA_LENGTH;
+
+		// Frame 0: frame_counter=0, length=15, 6 bytes data (indices 0-5)
+		frameTimeout.identifier = 0x19F03052; // PGN 0x1F030, source 0x52
+		frameTimeout.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameTimeout.data[1] = 15; // total length
+		memcpy(&frameTimeout.data[2], payloadTimeout.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameTimeout);
+		CANNetworkManager::CANNetwork.update();
+
+		// Advance time to exactly FP_TIMEOUT_MS (750ms) since last session activity
+		// Normal code: 750 > 750 is false, session stays alive
+		// Mutant: 750 >= 750 is true, session times out
+		time_source.update_for_ms(750);
+		CANNetworkManager::CANNetwork.update();
+
+		// Session should still be alive, send remaining frames
+		// Frame 1: frame_counter=1, 7 bytes data (indices 6-12)
+		frameTimeout.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&frameTimeout.data[1], payloadTimeout.data() + 6, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameTimeout);
+
+		// Frame 2: frame_counter=2, 2 bytes data (indices 13-14) + 5 bytes padding
+		frameTimeout.data[0] = 0x02; // sequence=0, frame_counter=2
+		memcpy(&frameTimeout.data[1], payloadTimeout.data() + 13, 2);
+		// Fill remaining with 0xFF
+		for (std::size_t i = 2; i < 7; ++i)
+		{
+			frameTimeout.data[1 + i] = 0xFF;
+		}
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameTimeout);
+
+		CANNetworkManager::CANNetwork.update();
+
+		// Callback should be hit exactly once with complete message
+		EXPECT_TRUE(contextTimeout.callbackHit);
+		EXPECT_EQ(0x1F030u, contextTimeout.receivedPgn);
+		EXPECT_EQ(15u, contextTimeout.receivedLength);
+		ASSERT_EQ(15u, contextTimeout.receivedData.size());
+		for (std::size_t i = 0; i < payloadTimeout.size(); ++i)
+		{
+			EXPECT_EQ(payloadTimeout[i], contextTimeout.receivedData[i]) << "Byte " << i;
+		}
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+			0x1F030, callbackTimeout, &contextTimeout, nullptr);
+	}
+
 	{
 		// Test COG/SOG
 		NMEA2000MessageInterface interfaceUnderTest(testECU, true, false, false, false, false, false, false);
