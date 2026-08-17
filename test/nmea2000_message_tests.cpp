@@ -68,6 +68,34 @@ class NMEA2000Test : public AgIsoStackTestFixture
 	// Wrapper to give tests a more meaningful name - no content.
 };
 
+struct FastPacketReceiveContext
+{
+	bool callbackHit = false;
+	std::uint32_t receivedPgn = 0;
+	std::vector<std::uint8_t> receivedData;
+};
+
+static void fast_packet_receive_callback(const CANMessage &message, void *parent)
+{
+	if (nullptr != parent)
+	{
+		auto *context = static_cast<FastPacketReceiveContext *>(parent);
+		context->callbackHit = true;
+		context->receivedPgn = message.get_identifier().get_parameter_group_number();
+		context->receivedData.assign(message.get_data().begin(), message.get_data().end());
+	}
+}
+
+static CANMessageFrame make_fast_packet_frame(std::uint32_t identifier)
+{
+	CANMessageFrame frame = {};
+	frame.identifier = identifier;
+	frame.isExtendedFrame = true;
+	frame.channel = 0;
+	frame.dataLength = CAN_DATA_LENGTH;
+	return frame;
+}
+
 TEST_F(NMEA2000Test, VesselHeadingDataInterface)
 {
 	VesselHeading messageDataUnderTest(nullptr);
@@ -483,21 +511,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 
 	// Test Fast Packet reception at minimum PGN boundary (0x1F000) - kills cxx_lt_to_le mutant at line 274
 	{
-		struct CallbackContext
-		{
-			bool callbackHit = false;
-			std::uint32_t receivedPgn = 0;
-		} contextMin;
-
-		auto callbackMin = [](const CANMessage &msg, void *parent)
-		{
-			if (parent != nullptr)
-			{
-				auto *ctx = static_cast<CallbackContext *>(parent);
-				ctx->callbackHit = true;
-				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
-			}
-		};
+		FastPacketReceiveContext contextMin;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
 			0x1F000, callbackMin, &contextMin, nullptr);
@@ -509,13 +523,10 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		payloadMin[2] = 0x33;
 		payloadMin[3] = 0x44;
 
-		CANMessageFrame frameMin = {};
-		frameMin.isExtendedFrame = true;
-		frameMin.channel = 0;
-		frameMin.dataLength = CAN_DATA_LENGTH;
+		CANMessageFrame frameMin = make_fast_packet_frame(0x19F00052);
 
 		// Frame 0: frame_counter=0, length=20, 6 bytes data
-		frameMin.identifier = 0x19F00052; // PGN 0x1F000, source 0x52
+		// PGN 0x1F000, source 0x52
 		frameMin.data[0] = 0x00; // sequence=0, frame_counter=0
 		frameMin.data[1] = 20; // total length
 		memcpy(&frameMin.data[2], payloadMin.data(), 6);
@@ -542,21 +553,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 
 	// Test Fast Packet reception at maximum PGN boundary (0x1FFFF) - kills cxx_gt_to_ge mutant at line 275
 	{
-		struct CallbackContext
-		{
-			bool callbackHit = false;
-			std::uint32_t receivedPgn = 0;
-		} contextMax;
-
-		auto callbackMax = [](const CANMessage &msg, void *parent)
-		{
-			if (parent != nullptr)
-			{
-				auto *ctx = static_cast<CallbackContext *>(parent);
-				ctx->callbackHit = true;
-				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
-			}
-		};
+		FastPacketReceiveContext contextMax;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
 			0x1FFFF, callbackMax, &contextMax, nullptr);
@@ -568,13 +565,10 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		payloadMax[2] = 0x77;
 		payloadMax[3] = 0x88;
 
-		CANMessageFrame frameMax = {};
-		frameMax.isExtendedFrame = true;
-		frameMax.channel = 0;
-		frameMax.dataLength = CAN_DATA_LENGTH;
+		CANMessageFrame frameMax = make_fast_packet_frame(0x19FFFF52);
 
 		// Frame 0: frame_counter=0, length=20, 6 bytes data
-		frameMax.identifier = 0x19FFFF52; // PGN 0x1FFFF, source 0x52
+		// PGN 0x1FFFF, source 0x52
 		frameMax.data[0] = 0x00; // sequence=0, frame_counter=0
 		frameMax.data[1] = 20; // total length
 		memcpy(&frameMax.data[2], payloadMax.data(), 6);
@@ -724,23 +718,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 
 	// Test Fast Packet reception with maximum valid length (223 bytes) - kills cxx_gt_to_ge mutant at line 403
 	{
-		struct CallbackContext
-		{
-			bool callbackHit = false;
-			std::uint32_t receivedPgn = 0;
-			std::size_t receivedLength = 0;
-		} contextMaxLen;
-
-		auto callbackMaxLen = [](const CANMessage &msg, void *parent)
-		{
-			if (parent != nullptr)
-			{
-				auto *ctx = static_cast<CallbackContext *>(parent);
-				ctx->callbackHit = true;
-				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
-				ctx->receivedLength = msg.get_data().size();
-			}
-		};
+		FastPacketReceiveContext contextMaxLen;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
 			0x1F010, callbackMaxLen, &contextMaxLen, nullptr);
@@ -752,13 +730,10 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 			payloadMaxLen[i] = static_cast<std::uint8_t>(i & 0xFF);
 		}
 
-		CANMessageFrame frameMaxLen = {};
-		frameMaxLen.isExtendedFrame = true;
-		frameMaxLen.channel = 0;
-		frameMaxLen.dataLength = CAN_DATA_LENGTH;
+		CANMessageFrame frameMaxLen = make_fast_packet_frame(0x19F01052);
 
 		// Frame 0: frame_counter=0, length=223, 6 bytes data
-		frameMaxLen.identifier = 0x19F01052; // PGN 0x1F010, source 0x52
+		// PGN 0x1F010, source 0x52
 		frameMaxLen.data[0] = 0x00; // sequence=0, frame_counter=0
 		frameMaxLen.data[1] = 223; // total length
 		memcpy(&frameMaxLen.data[2], payloadMaxLen.data(), 6);
@@ -783,7 +758,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 
 		EXPECT_TRUE(contextMaxLen.callbackHit);
 		EXPECT_EQ(0x1F010u, contextMaxLen.receivedPgn);
-		EXPECT_EQ(223u, contextMaxLen.receivedLength);
+		EXPECT_EQ(223u, contextMaxLen.receivedData.size());
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
 			0x1F010, callbackMaxLen, &contextMaxLen, nullptr);
@@ -791,19 +766,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 
 	// Test Fast Packet reception with invalid length (8 bytes) - kills cxx_le_to_lt mutant at line 408
 	{
-		struct CallbackContext
-		{
-			bool callbackHit = false;
-		} contextInvalidLen;
-
-		auto callbackInvalidLen = [](const CANMessage &msg, void *parent)
-		{
-			if (parent != nullptr)
-			{
-				auto *ctx = static_cast<CallbackContext *>(parent);
-				ctx->callbackHit = true;
-			}
-		};
+		FastPacketReceiveContext contextInvalidLen;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
 			0x1F011, callbackInvalidLen, &contextInvalidLen, nullptr);
@@ -811,13 +774,10 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		// Create an 8-byte Fast Packet message for PGN 0x1F011 (should be rejected)
 		std::vector<std::uint8_t> payloadInvalidLen(8, 0xAA);
 
-		CANMessageFrame frameInvalidLen = {};
-		frameInvalidLen.isExtendedFrame = true;
-		frameInvalidLen.channel = 0;
-		frameInvalidLen.dataLength = CAN_DATA_LENGTH;
+		CANMessageFrame frameInvalidLen = make_fast_packet_frame(0x19F01152);
 
 		// Frame 0: frame_counter=0, length=8, 6 bytes data
-		frameInvalidLen.identifier = 0x19F01152; // PGN 0x1F011, source 0x52
+		// PGN 0x1F011, source 0x52
 		frameInvalidLen.data[0] = 0x00; // sequence=0, frame_counter=0
 		frameInvalidLen.data[1] = 8; // total length (INVALID - should be rejected)
 		memcpy(&frameInvalidLen.data[2], payloadInvalidLen.data(), 6);
@@ -849,25 +809,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 	// - After frame 1: transferred=13, length=16, 13>=16 is false, 13<16 is true -> mutant would complete incorrectly
 	// - After frame 2: transferred=16, length=16, 16>=16 is true, 16<16 is false -> both correct
 	{
-		struct CallbackContext
-		{
-			bool callbackHit = false;
-			std::uint32_t receivedPgn = 0;
-			std::size_t receivedLength = 0;
-			std::vector<std::uint8_t> receivedData;
-		} contextPartial;
-
-		auto callbackPartial = [](const CANMessage &msg, void *parent)
-		{
-			if (parent != nullptr)
-			{
-				auto *ctx = static_cast<CallbackContext *>(parent);
-				ctx->callbackHit = true;
-				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
-				ctx->receivedLength = msg.get_data().size();
-				ctx->receivedData.assign(msg.get_data().begin(), msg.get_data().end());
-			}
-		};
+		FastPacketReceiveContext contextPartial;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
 			0x1F020, callbackPartial, &contextPartial, nullptr);
@@ -879,13 +821,10 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 			payloadPartial[i] = static_cast<std::uint8_t>(0x10 + i);
 		}
 
-		CANMessageFrame framePartial = {};
-		framePartial.isExtendedFrame = true;
-		framePartial.channel = 0;
-		framePartial.dataLength = CAN_DATA_LENGTH;
+		CANMessageFrame framePartial = make_fast_packet_frame(0x19F02052);
 
 		// Frame 0: frame_counter=0, length=16, 6 bytes data (indices 0-5)
-		framePartial.identifier = 0x19F02052; // PGN 0x1F020, source 0x52
+		// PGN 0x1F020, source 0x52
 		framePartial.data[0] = 0x00; // sequence=0, frame_counter=0
 		framePartial.data[1] = 16; // total length
 		memcpy(&framePartial.data[2], payloadPartial.data(), 6);
@@ -919,7 +858,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		// After third frame (16 bytes), callback should be hit exactly once
 		EXPECT_TRUE(contextPartial.callbackHit);
 		EXPECT_EQ(0x1F020u, contextPartial.receivedPgn);
-		EXPECT_EQ(16u, contextPartial.receivedLength);
+		EXPECT_EQ(16u, contextPartial.receivedData.size());
 		ASSERT_EQ(16u, contextPartial.receivedData.size());
 		for (std::size_t i = 0; i < payloadPartial.size(); ++i)
 		{
@@ -934,25 +873,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 	// The mutant changes timeout condition from > to >=. At exactly FP_TIMEOUT_MS (750ms),
 	// normal code keeps session alive, mutant closes it.
 	{
-		struct CallbackContext
-		{
-			bool callbackHit = false;
-			std::uint32_t receivedPgn = 0;
-			std::size_t receivedLength = 0;
-			std::vector<std::uint8_t> receivedData;
-		} contextTimeout;
-
-		auto callbackTimeout = [](const CANMessage &msg, void *parent)
-		{
-			if (parent != nullptr)
-			{
-				auto *ctx = static_cast<CallbackContext *>(parent);
-				ctx->callbackHit = true;
-				ctx->receivedPgn = msg.get_identifier().get_parameter_group_number();
-				ctx->receivedLength = msg.get_data().size();
-				ctx->receivedData.assign(msg.get_data().begin(), msg.get_data().end());
-			}
-		};
+		FastPacketReceiveContext contextTimeout;
 
 		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
 			0x1F030, callbackTimeout, &contextTimeout, nullptr);
@@ -964,13 +885,10 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 			payloadTimeout[i] = static_cast<std::uint8_t>(0xA0 + i);
 		}
 
-		CANMessageFrame frameTimeout = {};
-		frameTimeout.isExtendedFrame = true;
-		frameTimeout.channel = 0;
-		frameTimeout.dataLength = CAN_DATA_LENGTH;
+		CANMessageFrame frameTimeout = make_fast_packet_frame(0x19F03052);
 
 		// Frame 0: frame_counter=0, length=15, 6 bytes data (indices 0-5)
-		frameTimeout.identifier = 0x19F03052; // PGN 0x1F030, source 0x52
+		// PGN 0x1F030, source 0x52
 		frameTimeout.data[0] = 0x00; // sequence=0, frame_counter=0
 		frameTimeout.data[1] = 15; // total length
 		memcpy(&frameTimeout.data[2], payloadTimeout.data(), 6);
@@ -1004,7 +922,7 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		// Callback should be hit exactly once with complete message
 		EXPECT_TRUE(contextTimeout.callbackHit);
 		EXPECT_EQ(0x1F030u, contextTimeout.receivedPgn);
-		EXPECT_EQ(15u, contextTimeout.receivedLength);
+		EXPECT_EQ(15u, contextTimeout.receivedData.size());
 		ASSERT_EQ(15u, contextTimeout.receivedData.size());
 		for (std::size_t i = 0; i < payloadTimeout.size(); ++i)
 		{
