@@ -3,6 +3,7 @@
 #include "isobus/hardware_integration/can_hardware_interface.hpp"
 #include "isobus/hardware_integration/virtual_can_plugin.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/isobus/nmea2000_fast_packet_protocol.hpp"
 #include "isobus/isobus/nmea2000_message_definitions.hpp"
 #include "isobus/isobus/nmea2000_message_interface.hpp"
 #include "isobus/utility/system_timing.hpp"
@@ -66,6 +67,34 @@ class NMEA2000Test : public AgIsoStackTestFixture
 {
 	// Wrapper to give tests a more meaningful name - no content.
 };
+
+struct FastPacketReceiveContext
+{
+	bool callbackHit = false;
+	std::uint32_t receivedPgn = 0;
+	std::vector<std::uint8_t> receivedData;
+};
+
+static void fast_packet_receive_callback(const CANMessage &message, void *parent)
+{
+	if (nullptr != parent)
+	{
+		auto *context = static_cast<FastPacketReceiveContext *>(parent);
+		context->callbackHit = true;
+		context->receivedPgn = message.get_identifier().get_parameter_group_number();
+		context->receivedData.assign(message.get_data().begin(), message.get_data().end());
+	}
+}
+
+static CANMessageFrame make_fast_packet_frame(std::uint32_t identifier)
+{
+	CANMessageFrame frame = {};
+	frame.identifier = identifier;
+	frame.isExtendedFrame = true;
+	frame.channel = 0;
+	frame.dataLength = CAN_DATA_LENGTH;
+	return frame;
+}
 
 TEST_F(NMEA2000Test, VesselHeadingDataInterface)
 {
@@ -448,6 +477,461 @@ TEST_F(NMEA2000Test, NMEA2KInterface)
 		testPlugin.read_frame(testFrame);
 	}
 	ASSERT_TRUE(testPlugin.get_queue_empty());
+
+	// Test FastPacketProtocol::calculate_number_of_frames() boundary values
+	// This kills the cxx_gt_to_le mutant at line 93 of nmea2000_fast_packet_protocol.cpp
+	EXPECT_EQ(1u, FastPacketProtocol::calculate_number_of_frames(6)); // 6 bytes = 1 frame (first frame carries 6)
+	EXPECT_EQ(2u, FastPacketProtocol::calculate_number_of_frames(7)); // 7 bytes = 2 frames (6 + 1)
+	EXPECT_EQ(2u, FastPacketProtocol::calculate_number_of_frames(13)); // 13 bytes = 2 frames (6 + 7)
+	EXPECT_EQ(3u, FastPacketProtocol::calculate_number_of_frames(14)); // 14 bytes = 3 frames (6 + 7 + 1)
+
+	// Fast Packet must reject a payload that fits in one CAN frame.
+	std::uint8_t singleFramePayload[CAN_DATA_LENGTH] = {};
+	FastPacketProtocol fastPacketProtocol([](auto &&...) {
+		return true;
+	});
+
+	EXPECT_FALSE(fastPacketProtocol.send_multipacket_message(0x1F014, singleFramePayload, static_cast<std::uint8_t>(sizeof(singleFramePayload)), testECU, nullptr));
+
+	// Fast Packet must accept a payload of exactly MAX_PROTOCOL_MESSAGE_LENGTH (223 bytes)
+	// This kills the cxx_gt_to_ge mutant at line 153 of nmea2000_fast_packet_protocol.cpp
+	std::vector<std::uint8_t> maxLengthPayload(223, 0xAA);
+	EXPECT_TRUE(fastPacketProtocol.send_multipacket_message(0x1F014, maxLengthPayload.data(), static_cast<std::uint8_t>(maxLengthPayload.size()), testECU, nullptr));
+	fastPacketProtocol.update();
+
+	// Fast Packet must accept the minimum PGN boundary (0x1F000)
+	// This kills the cxx_lt_to_le mutant at line 163 of nmea2000_fast_packet_protocol.cpp
+	EXPECT_TRUE(fastPacketProtocol.send_multipacket_message(0x1F000, maxLengthPayload.data(), static_cast<std::uint8_t>(maxLengthPayload.size()), testECU, nullptr));
+	fastPacketProtocol.update();
+
+	// Fast Packet must accept the maximum PGN boundary (0x1FFFF)
+	// This kills the cxx_gt_to_ge mutant at line 163 of nmea2000_fast_packet_protocol.cpp
+	EXPECT_TRUE(fastPacketProtocol.send_multipacket_message(0x1FFFF, maxLengthPayload.data(), static_cast<std::uint8_t>(maxLengthPayload.size()), testECU, nullptr));
+	fastPacketProtocol.update();
+
+	// Test Fast Packet reception at minimum PGN boundary (0x1F000) - kills cxx_lt_to_le mutant at line 274
+	{
+		FastPacketReceiveContext contextMin;
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+		  0x1F000, fast_packet_receive_callback, &contextMin, nullptr);
+
+		// Create a 20-byte Fast Packet message for PGN 0x1F000
+		std::vector<std::uint8_t> payloadMin(20, 0xAA);
+		payloadMin[0] = 0x11;
+		payloadMin[1] = 0x22;
+		payloadMin[2] = 0x33;
+		payloadMin[3] = 0x44;
+
+		CANMessageFrame frameMin = make_fast_packet_frame(0x19F00052);
+
+		// Frame 0: frame_counter=0, length=20, 6 bytes data
+		// PGN 0x1F000, source 0x52
+		frameMin.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameMin.data[1] = 20; // total length
+		memcpy(&frameMin.data[2], payloadMin.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMin);
+
+		// Frame 1: frame_counter=1, 7 bytes data
+		frameMin.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&frameMin.data[1], payloadMin.data() + 6, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMin);
+
+		// Frame 2: frame_counter=2, 7 bytes data (remaining 7 bytes)
+		frameMin.data[0] = 0x02; // sequence=0, frame_counter=2
+		memcpy(&frameMin.data[1], payloadMin.data() + 13, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMin);
+
+		CANNetworkManager::CANNetwork.update();
+
+		EXPECT_TRUE(contextMin.callbackHit);
+		EXPECT_EQ(0x1F000u, contextMin.receivedPgn);
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+		  0x1F000, fast_packet_receive_callback, &contextMin, nullptr);
+	}
+
+	// Test Fast Packet reception at maximum PGN boundary (0x1FFFF) - kills cxx_gt_to_ge mutant at line 275
+	{
+		FastPacketReceiveContext contextMax;
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+		  0x1FFFF, fast_packet_receive_callback, &contextMax, nullptr);
+
+		// Create a 20-byte Fast Packet message for PGN 0x1FFFF
+		std::vector<std::uint8_t> payloadMax(20, 0xBB);
+		payloadMax[0] = 0x55;
+		payloadMax[1] = 0x66;
+		payloadMax[2] = 0x77;
+		payloadMax[3] = 0x88;
+
+		CANMessageFrame frameMax = make_fast_packet_frame(0x19FFFF52);
+
+		// Frame 0: frame_counter=0, length=20, 6 bytes data
+		// PGN 0x1FFFF, source 0x52
+		frameMax.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameMax.data[1] = 20; // total length
+		memcpy(&frameMax.data[2], payloadMax.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMax);
+
+		// Frame 1: frame_counter=1, 7 bytes data
+		frameMax.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&frameMax.data[1], payloadMax.data() + 6, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMax);
+
+		// Frame 2: frame_counter=2, 7 bytes data (remaining 7 bytes)
+		frameMax.data[0] = 0x02; // sequence=0, frame_counter=2
+		memcpy(&frameMax.data[1], payloadMax.data() + 13, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMax);
+
+		CANNetworkManager::CANNetwork.update();
+
+		EXPECT_TRUE(contextMax.callbackHit);
+		EXPECT_EQ(0x1FFFFu, contextMax.receivedPgn);
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+		  0x1FFFF, fast_packet_receive_callback, &contextMax, nullptr);
+	}
+
+	// Test Fast Packet session history and sequence number independence per PGN
+	// This kills the cxx_eq_to_ne mutants at lines 221 and 261 of nmea2000_fast_packet_protocol.cpp
+	{
+		struct CapturedFrame
+		{
+			std::uint32_t pgn;
+			std::uint8_t firstByte;
+			bool isFirstFrame;
+		};
+		std::vector<CapturedFrame> capturedFrames;
+
+		FastPacketProtocol historyTestProtocol([&capturedFrames](std::uint32_t parameterGroupNumber, CANDataSpan data, std::shared_ptr<InternalControlFunction> source, std::shared_ptr<ControlFunction> destination, CANIdentifier::CANPriority priority) {
+			if (data.size() > 0)
+			{
+				std::uint8_t frameCounter = data[0] & 0x1F;
+				capturedFrames.push_back({ parameterGroupNumber, data[0], frameCounter == 0 });
+			}
+			return true;
+		});
+
+		std::vector<std::uint8_t> testPayload(20, 0xAA); // 20 bytes > 8, so fast packet is used
+
+		// Session 1: PGN 0x1F014 - first session for this PGN, sequence should be 0
+		EXPECT_TRUE(historyTestProtocol.send_multipacket_message(0x1F014, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		historyTestProtocol.update();
+
+		// Session 2: PGN 0x1F015 - first session for this PGN, sequence should also be 0 (independent history)
+		EXPECT_TRUE(historyTestProtocol.send_multipacket_message(0x1F015, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		historyTestProtocol.update();
+
+		// Session 3: PGN 0x1F014 again - second session for this PGN, sequence should be 1
+		EXPECT_TRUE(historyTestProtocol.send_multipacket_message(0x1F014, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		historyTestProtocol.update();
+
+		// Session 4: PGN 0x1F015 again - second session for this PGN, sequence should be 1
+		// This kills the cxx_eq_to_ne mutant at line 221: if PGN comparison is mutated to !=,
+		// session 2 incorrectly updates PGN 0x1F014's history entry, so PGN 0x1F015 has no history entry.
+		// Session 4 would then get sequence 0 instead of 1.
+		EXPECT_TRUE(historyTestProtocol.send_multipacket_message(0x1F015, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		historyTestProtocol.update();
+
+		// Verify sequence numbers
+		// Extract sequence number from bits 5-7 of first byte: (firstByte >> 5) & 0x07
+		std::uint8_t seq1 = 0xFF, seq2 = 0xFF, seq3 = 0xFF, seq4 = 0xFF;
+		int pgn14Count = 0;
+		int pgn15Count = 0;
+		for (const auto &f : capturedFrames)
+		{
+			if (f.pgn == 0x1F014 && f.isFirstFrame)
+			{
+				if (pgn14Count == 0)
+					seq1 = (f.firstByte >> 5) & 0x07;
+				else if (pgn14Count == 1)
+					seq3 = (f.firstByte >> 5) & 0x07;
+				pgn14Count++;
+			}
+			else if (f.pgn == 0x1F015 && f.isFirstFrame)
+			{
+				if (pgn15Count == 0)
+					seq2 = (f.firstByte >> 5) & 0x07;
+				else if (pgn15Count == 1)
+					seq4 = (f.firstByte >> 5) & 0x07;
+				pgn15Count++;
+			}
+		}
+
+		EXPECT_EQ(0u, seq1) << "First session for PGN 0x1F014 should have sequence number 0";
+		EXPECT_EQ(0u, seq2) << "First session for PGN 0x1F015 should have sequence number 0 (independent history)";
+		EXPECT_EQ(1u, seq3) << "Second session for PGN 0x1F014 should have sequence number 1";
+		EXPECT_EQ(1u, seq4) << "Second session for PGN 0x1F015 should have sequence number 1 (independent history)";
+	}
+
+	// Test Fast Packet transmission frame counting - kills cxx_lt_to_le mutant at line 488
+	// The mutant changes loop condition from i < remaining to i <= remaining.
+	// With 2 total frames (13 bytes payload), initial remaining=2:
+	// - Original: i=0<2 sends frame 0, remaining becomes 1, i=1<1 false -> 1 frame sent
+	// - Mutant: i=0<=2 sends frame 0, remaining becomes 1, i=1<=1 sends frame 1 -> 2 frames sent
+	{
+		struct CapturedTxFrame
+		{
+			std::uint32_t pgn;
+			std::uint8_t firstByte; // Contains sequence (bits 5-7) and frame_counter (bits 0-4)
+			std::vector<std::uint8_t> payload;
+		};
+		std::vector<CapturedTxFrame> capturedTxFrames;
+
+		FastPacketProtocol txTestProtocol([&capturedTxFrames](std::uint32_t parameterGroupNumber, CANDataSpan data, std::shared_ptr<InternalControlFunction> source, std::shared_ptr<ControlFunction> destination, CANIdentifier::CANPriority priority) {
+			CapturedTxFrame frame;
+			frame.pgn = parameterGroupNumber;
+			if (data.size() > 0)
+			{
+				frame.firstByte = data[0];
+				frame.payload.assign(data.begin() + 1, data.end());
+			}
+			capturedTxFrames.push_back(std::move(frame));
+			return true;
+		});
+
+		// 13 bytes payload: first frame carries 6 bytes, second frame carries 7 bytes = 2 frames total
+		std::vector<std::uint8_t> testPayload(13);
+		for (std::size_t i = 0; i < testPayload.size(); ++i)
+		{
+			testPayload[i] = static_cast<std::uint8_t>(0x10 + i);
+		}
+
+		EXPECT_TRUE(txTestProtocol.send_multipacket_message(0x1F020, testPayload.data(), static_cast<std::uint8_t>(testPayload.size()), testECU, nullptr));
+		txTestProtocol.update();
+
+		// Original code sends only frame 0 in first update() call (remaining goes 2->1, loop exits)
+		// Mutant would send both frame 0 and frame 1 in first update() call
+		ASSERT_EQ(1u, capturedTxFrames.size()) << "Expected exactly 1 frame in first update for 13-byte payload (2 frames total)";
+
+		// Verify frame 0: firstByte=0x00 (seq=0, cnt=0), payload[0]=length=13, payload[1..6]=data[0..5]
+		EXPECT_EQ(0x1F020u, capturedTxFrames[0].pgn);
+		EXPECT_EQ(0x00, capturedTxFrames[0].firstByte); // seq=0, frame_counter=0
+		ASSERT_EQ(7u, capturedTxFrames[0].payload.size()); // length byte + 6 data bytes
+		EXPECT_EQ(13, capturedTxFrames[0].payload[0]); // message length
+		for (std::size_t j = 0; j < 6; ++j)
+		{
+			EXPECT_EQ(testPayload[j], capturedTxFrames[0].payload[1 + j]) << "Frame 0 payload byte " << j;
+		}
+	}
+
+	// Test Fast Packet reception with maximum valid length (223 bytes) - kills cxx_gt_to_ge mutant at line 403
+	{
+		FastPacketReceiveContext contextMaxLen;
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+		  0x1F010, fast_packet_receive_callback, &contextMaxLen, nullptr);
+
+		// Create a 223-byte Fast Packet message for PGN 0x1F010
+		std::vector<std::uint8_t> payloadMaxLen(223);
+		for (std::size_t i = 0; i < payloadMaxLen.size(); ++i)
+		{
+			payloadMaxLen[i] = static_cast<std::uint8_t>(i & 0xFF);
+		}
+
+		CANMessageFrame frameMaxLen = make_fast_packet_frame(0x19F01052);
+
+		// Frame 0: frame_counter=0, length=223, 6 bytes data
+		// PGN 0x1F010, source 0x52
+		frameMaxLen.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameMaxLen.data[1] = 223; // total length
+		memcpy(&frameMaxLen.data[2], payloadMaxLen.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMaxLen);
+
+		// Frames 1-31: frame_counter=1 to 31, 7 bytes data each
+		for (std::uint8_t frameIdx = 1; frameIdx <= 31; ++frameIdx)
+		{
+			frameMaxLen.data[0] = frameIdx; // sequence=0, frame_counter=frameIdx
+			std::size_t srcOffset = 6 + (frameIdx - 1) * 7;
+			std::size_t bytesToCopy = std::min<std::size_t>(7, payloadMaxLen.size() - srcOffset);
+			memcpy(&frameMaxLen.data[1], payloadMaxLen.data() + srcOffset, bytesToCopy);
+			// Fill remaining with 0xFF
+			for (std::size_t i = bytesToCopy; i < 7; ++i)
+			{
+				frameMaxLen.data[1 + i] = 0xFF;
+			}
+			CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameMaxLen);
+		}
+
+		CANNetworkManager::CANNetwork.update();
+
+		EXPECT_TRUE(contextMaxLen.callbackHit);
+		EXPECT_EQ(0x1F010u, contextMaxLen.receivedPgn);
+		EXPECT_EQ(223u, contextMaxLen.receivedData.size());
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+		  0x1F010, fast_packet_receive_callback, &contextMaxLen, nullptr);
+	}
+
+	// Test Fast Packet reception with invalid length (8 bytes) - kills cxx_le_to_lt mutant at line 408
+	{
+		FastPacketReceiveContext contextInvalidLen;
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+		  0x1F011, fast_packet_receive_callback, &contextInvalidLen, nullptr);
+
+		// Create an 8-byte Fast Packet message for PGN 0x1F011 (should be rejected)
+		std::vector<std::uint8_t> payloadInvalidLen(8, 0xAA);
+
+		CANMessageFrame frameInvalidLen = make_fast_packet_frame(0x19F01152);
+
+		// Frame 0: frame_counter=0, length=8, 6 bytes data
+		// PGN 0x1F011, source 0x52
+		frameInvalidLen.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameInvalidLen.data[1] = 8; // total length (INVALID - should be rejected)
+		memcpy(&frameInvalidLen.data[2], payloadInvalidLen.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameInvalidLen);
+
+		// Frame 1: frame_counter=1, 2 bytes data (would complete the 8 bytes if session was created)
+		frameInvalidLen.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&frameInvalidLen.data[1], payloadInvalidLen.data() + 6, 2);
+		// Fill remaining with 0xFF
+		for (std::size_t i = 2; i < 7; ++i)
+		{
+			frameInvalidLen.data[1 + i] = 0xFF;
+		}
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameInvalidLen);
+
+		CANNetworkManager::CANNetwork.update();
+
+		// Callback should NOT be hit because 8 bytes is invalid for Fast Packet
+		EXPECT_FALSE(contextInvalidLen.callbackHit);
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+		  0x1F011, fast_packet_receive_callback, &contextInvalidLen, nullptr);
+	}
+
+	// Test Fast Packet reception partial assembly - kills cxx_ge_to_lt mutant at line 364
+	// The mutant changes the completion condition from (transferred >= length) to (transferred < length).
+	// With a 16-byte message (3 frames: 6 + 7 + 3 bytes):
+	// - After frame 0: transferred=6, length=16, 6>=16 is false, 6<16 is true -> mutant would complete incorrectly
+	// - After frame 1: transferred=13, length=16, 13>=16 is false, 13<16 is true -> mutant would complete incorrectly
+	// - After frame 2: transferred=16, length=16, 16>=16 is true, 16<16 is false -> both correct
+	{
+		FastPacketReceiveContext contextPartial;
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+		  0x1F020, fast_packet_receive_callback, &contextPartial, nullptr);
+
+		// Create a 16-byte Fast Packet message for PGN 0x1F020
+		std::vector<std::uint8_t> payloadPartial(16);
+		for (std::size_t i = 0; i < payloadPartial.size(); ++i)
+		{
+			payloadPartial[i] = static_cast<std::uint8_t>(0x10 + i);
+		}
+
+		CANMessageFrame framePartial = make_fast_packet_frame(0x19F02052);
+
+		// Frame 0: frame_counter=0, length=16, 6 bytes data (indices 0-5)
+		// PGN 0x1F020, source 0x52
+		framePartial.data[0] = 0x00; // sequence=0, frame_counter=0
+		framePartial.data[1] = 16; // total length
+		memcpy(&framePartial.data[2], payloadPartial.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(framePartial);
+		CANNetworkManager::CANNetwork.update();
+
+		// After first frame (6 bytes), callback should NOT be hit
+		EXPECT_FALSE(contextPartial.callbackHit);
+
+		// Frame 1: frame_counter=1, 7 bytes data (indices 6-12)
+		framePartial.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&framePartial.data[1], payloadPartial.data() + 6, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(framePartial);
+		CANNetworkManager::CANNetwork.update();
+
+		// After second frame (13 bytes), callback should NOT be hit
+		// This kills the cxx_ge_to_lt mutant at line 364 which would incorrectly complete when transferred < length
+		EXPECT_FALSE(contextPartial.callbackHit);
+
+		// Frame 2: frame_counter=2, 3 bytes data (indices 13-15) + 4 bytes padding
+		framePartial.data[0] = 0x02; // sequence=0, frame_counter=2
+		memcpy(&framePartial.data[1], payloadPartial.data() + 13, 3);
+		// Fill remaining with 0xFF
+		for (std::size_t i = 3; i < 7; ++i)
+		{
+			framePartial.data[1 + i] = 0xFF;
+		}
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(framePartial);
+		CANNetworkManager::CANNetwork.update();
+
+		// After third frame (16 bytes), callback should be hit exactly once
+		EXPECT_TRUE(contextPartial.callbackHit);
+		EXPECT_EQ(0x1F020u, contextPartial.receivedPgn);
+		EXPECT_EQ(16u, contextPartial.receivedData.size());
+		ASSERT_EQ(16u, contextPartial.receivedData.size());
+		for (std::size_t i = 0; i < payloadPartial.size(); ++i)
+		{
+			EXPECT_EQ(payloadPartial[i], contextPartial.receivedData[i]) << "Byte " << i;
+		}
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+		  0x1F020, fast_packet_receive_callback, &contextPartial, nullptr);
+	}
+
+	// Test Fast Packet RX session timeout boundary - kills cxx_gt_to_ge mutant at line 478
+	// The mutant changes timeout condition from > to >=. At exactly FP_TIMEOUT_MS (750ms),
+	// normal code keeps session alive, mutant closes it.
+	{
+		FastPacketReceiveContext contextTimeout;
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->register_multipacket_message_callback(
+		  0x1F030, fast_packet_receive_callback, &contextTimeout, nullptr);
+
+		// Create a 15-byte Fast Packet message for PGN 0x1F030 (3 frames: 6 + 7 + 2)
+		std::vector<std::uint8_t> payloadTimeout(15);
+		for (std::size_t i = 0; i < payloadTimeout.size(); ++i)
+		{
+			payloadTimeout[i] = static_cast<std::uint8_t>(0xA0 + i);
+		}
+
+		CANMessageFrame frameTimeout = make_fast_packet_frame(0x19F03052);
+
+		// Frame 0: frame_counter=0, length=15, 6 bytes data (indices 0-5)
+		// PGN 0x1F030, source 0x52
+		frameTimeout.data[0] = 0x00; // sequence=0, frame_counter=0
+		frameTimeout.data[1] = 15; // total length
+		memcpy(&frameTimeout.data[2], payloadTimeout.data(), 6);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameTimeout);
+		CANNetworkManager::CANNetwork.update();
+
+		// Advance time to exactly FP_TIMEOUT_MS (750ms) since last session activity
+		// Normal code: 750 > 750 is false, session stays alive
+		// Mutant: 750 >= 750 is true, session times out
+		time_source.update_for_ms(750);
+		CANNetworkManager::CANNetwork.update();
+
+		// Session should still be alive, send remaining frames
+		// Frame 1: frame_counter=1, 7 bytes data (indices 6-12)
+		frameTimeout.data[0] = 0x01; // sequence=0, frame_counter=1
+		memcpy(&frameTimeout.data[1], payloadTimeout.data() + 6, 7);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameTimeout);
+
+		// Frame 2: frame_counter=2, 2 bytes data (indices 13-14) + 5 bytes padding
+		frameTimeout.data[0] = 0x02; // sequence=0, frame_counter=2
+		memcpy(&frameTimeout.data[1], payloadTimeout.data() + 13, 2);
+		// Fill remaining with 0xFF
+		for (std::size_t i = 2; i < 7; ++i)
+		{
+			frameTimeout.data[1 + i] = 0xFF;
+		}
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameTimeout);
+
+		CANNetworkManager::CANNetwork.update();
+
+		// Callback should be hit exactly once with complete message
+		EXPECT_TRUE(contextTimeout.callbackHit);
+		EXPECT_EQ(0x1F030u, contextTimeout.receivedPgn);
+		EXPECT_EQ(15u, contextTimeout.receivedData.size());
+		ASSERT_EQ(15u, contextTimeout.receivedData.size());
+		for (std::size_t i = 0; i < payloadTimeout.size(); ++i)
+		{
+			EXPECT_EQ(payloadTimeout[i], contextTimeout.receivedData[i]) << "Byte " << i;
+		}
+
+		CANNetworkManager::CANNetwork.get_fast_packet_protocol(0)->remove_multipacket_message_callback(
+		  0x1F030, fast_packet_receive_callback, &contextTimeout, nullptr);
+	}
 
 	{
 		// Test COG/SOG
