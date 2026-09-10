@@ -1,6 +1,6 @@
 name: Mull - CAN Identifier - All Tests
 
-# Re run #1 aims to kill can_identifier.cpp:72:23 survived mutant
+# Re run #2 aims to kill can_identifier.cpp:72:23 survived mutant
 
 on:
   workflow_dispatch:
