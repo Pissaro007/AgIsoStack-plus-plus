@@ -378,10 +378,12 @@ TEST(MaintainPowerInterfaceTests,
 
 	const isobus::EventCallbackHandle listener =
 		interfaceUnderTest.get_maintain_power_data_event_publisher().add_listener(
-	    	[&notificationCount](
-	      		const std::shared_ptr const bool & {
+	        // 1. Capture by reference [&notificationCount] to enable modifying notificationCount
+	        // 2. Parentheses () around parameter
+	    	[&notificationCount](const std::shared_ptr<MaintainPowerData>&,  const bool&) {		
 		    		++notificationCount;
-	    });
+	    	}
+		);
 
 	const std::vector<std::uint8_t> malformedData(7, 0xFF);
 	const CANMessage malformedMessage = make_receive_message(
@@ -407,11 +409,13 @@ TEST(MaintainPowerInterfaceTests,
 
 	const isobus::EventCallbackHandle listener =
 		interfaceUnderTest.get_maintain_power_data_event_publisher().add_listener(
-	    	[&notificationCount](
-	      		const std::shared_ptr const bool & {
+	        // 1. Capture by reference [&notificationCount] to enable modifying notificationCount
+	        // 2. Parentheses () around parameter
+	    	[&notificationCount](const std::shared_ptr<MaintainPowerData>&,  const bool&) {		
 		    		++notificationCount;
-	    });
-
+	    	}
+		);
+	
 	std::vector<std::uint8_t> data(8, 0xFF);
 	data[0] = 0x5F;
 	data[1] = 0x55;
@@ -513,10 +517,12 @@ TEST(MaintainPowerInterfaceTests,
 
 	const isobus::EventCallbackHandle listener =
 		interfaceUnderTest.get_maintain_power_data_event_publisher().add_listener(
-	    	[&notificationCount](
-	      		const std::shared_ptr const bool & {
+	        // 1. Capture by reference [&notificationCount] to enable modifying notificationCount
+	        // 2. Parentheses () around parameter
+	    	[&notificationCount](const std::shared_ptr<MaintainPowerData>&,  const bool&) {		
 		    		++notificationCount;
-	    });
+	    	}
+		);
 
 	interfaceUnderTest.get_maintain_power_data_event_publisher()
 	  .remove_listener(listener);
