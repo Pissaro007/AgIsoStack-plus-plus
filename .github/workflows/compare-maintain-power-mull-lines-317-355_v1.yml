@@ -1,0 +1,571 @@
+name: Compare Mull on MaintainPower lines 317 and 355 v1
+
+on:
+  push:
+    branches:
+      - research/ai-generated-cpp-tests
+    paths:
+      - ".github/workflows/compare-maintain-power-mull-lines-317-355_v1.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_FILE: isobus/src/isobus_maintain_power_interface.cpp
+  GENERATED_TEST_FILE: test/generated_maintain_power_tests.cpp
+  TARGET_LINES: "317 355"
+
+jobs:
+  compare-mull:
+    name: Compare Mull baseline and generated tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Clang 19 Mull and build dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang-19 \
+            llvm-19 \
+            build-essential \
+            cmake \
+            ninja-build \
+            curl
+
+          curl -1sLf \
+            "https://dl.cloudsmith.io/public/mull-project/mull-stable/setup.deb.sh" \
+            | sudo -E bash
+
+          sudo apt-get update
+          sudo apt-get install -y mull-19
+
+      - name: Verify tools and files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          clang-19 --version
+          llvm-profdata-19 --version
+          llvm-cov-19 --version
+          mull-runner-19 --version
+
+          test -f /usr/lib/mull-ir-frontend-19
+          test -f "${SOURCE_FILE}"
+          test -f "${GENERATED_TEST_FILE}"
+
+      - name: Create Mull configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          ESCAPED_SOURCE_FILE=$(printf '%s' "${SOURCE_FILE}" | sed 's#[][\\.^$*+?(){}|]#\\&#g')
+
+          cat > mull.yml <<EOF
+          includePaths:
+            - '.*${ESCAPED_SOURCE_FILE}$'
+          excludePaths:
+            - '.*googletest.*'
+            - '.*googlemock.*'
+            - '.*gtest.*'
+            - '.*gmock.*'
+          quiet: false
+          EOF
+
+          echo "=== Mull configuration ==="
+          cat mull.yml
+
+      - name: Save generated tests and create empty baseline source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp "${GENERATED_TEST_FILE}" /tmp/generated_maintain_power_tests.cpp
+          : > "${GENERATED_TEST_FILE}"
+
+      - name: Configure baseline build
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+          MULL_CONFIG: ${{ github.workspace }}/mull.yml
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build-mull-baseline \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Build baseline
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build-mull-baseline --parallel 2
+          test -x build-mull-baseline/test/unit_tests
+
+      - name: Run baseline tests and create coverage profile
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/baseline.profraw
+        run: |
+          set -euo pipefail
+
+          rm -f baseline.profraw baseline.profdata
+
+          build-mull-baseline/test/unit_tests \
+            --gtest_filter=MaintainPowerInterfaceTests.* \
+            --gtest_color=no \
+            2>&1 | tee baseline-tests.log
+
+          test -s baseline.profraw
+
+          llvm-profdata-19 merge \
+            -sparse \
+            baseline.profraw \
+            -o baseline.profdata
+
+          test -s baseline.profdata
+
+      - name: Run Mull baseline
+        shell: bash
+        env:
+          MULL_CONFIG: ${{ github.workspace }}/mull.yml
+        run: |
+          set -euo pipefail
+
+          mkdir -p mull-results-baseline
+
+          mull-runner-19 \
+            --allow-surviving \
+            --debug \
+            --timeout 120000 \
+            --coverage-info "${GITHUB_WORKSPACE}/baseline.profdata" \
+            --reporters IDE \
+            --reporters Elements \
+            --report-dir "${GITHUB_WORKSPACE}/mull-results-baseline" \
+            --report-name maintain-power-baseline \
+            build-mull-baseline/test/unit_tests \
+            --gtest_filter=MaintainPowerInterfaceTests.* \
+            --gtest_color=no \
+            2>&1 | tee mull-results-baseline/mull-console.log
+
+      - name: Restore generated tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cp /tmp/generated_maintain_power_tests.cpp "${GENERATED_TEST_FILE}"
+
+      - name: Configure generated tests build
+        shell: bash
+        env:
+          CC: clang-19
+          CXX: clang++-19
+          MULL_CONFIG: ${{ github.workspace }}/mull.yml
+        run: |
+          set -euo pipefail
+
+          cmake -S . -B build-mull-generated \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            -DCMAKE_C_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_CXX_FLAGS="-O0 -g -grecord-command-line -fprofile-instr-generate -fcoverage-mapping -fpass-plugin=/usr/lib/mull-ir-frontend-19" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fprofile-instr-generate"
+
+      - name: Build with generated tests
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          cmake --build build-mull-generated --parallel 2
+          test -x build-mull-generated/test/unit_tests
+
+      - name: Run tests with generated tests and create coverage profile
+        shell: bash
+        env:
+          LLVM_PROFILE_FILE: ${{ github.workspace }}/generated.profraw
+        run: |
+          set -euo pipefail
+
+          rm -f generated.profraw generated.profdata
+
+          build-mull-generated/test/unit_tests \
+            --gtest_filter=MaintainPowerInterfaceTests.* \
+            --gtest_color=no \
+            2>&1 | tee generated-tests.log
+
+          test -s generated.profraw
+
+          llvm-profdata-19 merge \
+            -sparse \
+            generated.profraw \
+            -o generated.profdata
+
+          test -s generated.profdata
+
+      - name: Run Mull with generated tests
+        shell: bash
+        env:
+          MULL_CONFIG: ${{ github.workspace }}/mull.yml
+        run: |
+          set -euo pipefail
+
+          mkdir -p mull-results-generated
+
+          mull-runner-19 \
+            --allow-surviving \
+            --debug \
+            --timeout 120000 \
+            --coverage-info "${GITHUB_WORKSPACE}/generated.profdata" \
+            --reporters IDE \
+            --reporters Elements \
+            --report-dir "${GITHUB_WORKSPACE}/mull-results-generated" \
+            --report-name maintain-power-generated \
+            build-mull-generated/test/unit_tests \
+            --gtest_filter=MaintainPowerInterfaceTests.* \
+            --gtest_color=no \
+            2>&1 | tee mull-results-generated/mull-console.log
+
+      - name: Extract and compare mutants on target lines
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import csv
+          import os
+          import re
+          from pathlib import Path
+
+          source_file = os.environ["SOURCE_FILE"].replace("\\", "/")
+          target_lines = {
+              int(value)
+              for value in os.environ["TARGET_LINES"].split()
+          }
+
+          pattern = re.compile(
+              r"^(.*?):(\d+):(\d+):\s+"
+              r"(?:warning|remark|note|info):\s+"
+              r"(Killed|Survived|Timeout|Timedout):\s+"
+              r"(.*?)\s+\[([^\]]+)\]\s*$",
+              re.IGNORECASE,
+          )
+
+          def normalize_status(status):
+              value = status.lower()
+              if value == "killed":
+                  return "Killed"
+              if value == "survived":
+                  return "Survived"
+              return "Timeout"
+
+          def parse_log(path):
+              mutants = {}
+              text = Path(path).read_text(
+                  encoding="utf-8",
+                  errors="replace",
+              )
+
+              for raw_line in text.splitlines():
+                  match = pattern.match(raw_line.strip())
+                  if not match:
+                      continue
+
+                  path_value, line, column, status, description, operator = (
+                      match.groups()
+                  )
+                  normalized_path = path_value.replace("\\", "/")
+                  line_number = int(line)
+
+                  if not normalized_path.endswith(source_file):
+                      continue
+                  if line_number not in target_lines:
+                      continue
+
+                  key = (
+                      line_number,
+                      int(column),
+                      operator.strip(),
+                      description.strip(),
+                  )
+                  mutants[key] = normalize_status(status)
+
+              return mutants
+
+          baseline = parse_log(
+              "mull-results-baseline/mull-console.log"
+          )
+          generated = parse_log(
+              "mull-results-generated/mull-console.log"
+          )
+
+          all_keys = sorted(set(baseline) | set(generated))
+
+          rows = []
+          for key in all_keys:
+              line, column, operator, description = key
+              baseline_status = baseline.get(key, "Not reported")
+              generated_status = generated.get(key, "Not reported")
+
+              killed_by_generated_tests = (
+                  baseline_status == "Survived"
+                  and generated_status == "Killed"
+              )
+
+              rows.append({
+                  "line": line,
+                  "column": column,
+                  "operator": operator,
+                  "description": description,
+                  "baseline": baseline_status,
+                  "generated": generated_status,
+                  "killed_by_generated_tests": (
+                      "yes" if killed_by_generated_tests else "no"
+                  ),
+              })
+
+          with Path("target-mutants-comparison.csv").open(
+              "w",
+              newline="",
+              encoding="utf-8",
+          ) as output_file:
+              writer = csv.DictWriter(
+                  output_file,
+                  fieldnames=[
+                      "line",
+                      "column",
+                      "operator",
+                      "description",
+                      "baseline",
+                      "generated",
+                      "killed_by_generated_tests",
+                  ],
+              )
+              writer.writeheader()
+              writer.writerows(rows)
+
+          baseline_survived = sum(
+              row["baseline"] == "Survived" for row in rows
+          )
+          generated_survived = sum(
+              row["generated"] == "Survived" for row in rows
+          )
+          additional_kills = sum(
+              row["killed_by_generated_tests"] == "yes"
+              for row in rows
+          )
+
+          report = [
+              "# Mull comparison for lines 317 and 355",
+              "",
+              f"Target source: `{source_file}`",
+              "",
+              f"Mutants reported on target lines: {len(rows)}",
+              f"Surviving in baseline: {baseline_survived}",
+              f"Surviving with generated tests: {generated_survived}",
+              f"Additional mutants killed by generated tests: {additional_kills}",
+              "",
+              "## Detailed comparison",
+              "",
+          ]
+
+          if rows:
+              for row in rows:
+                  report.extend([
+                      f"### Line {row['line']}, column {row['column']}",
+                      "",
+                      f"Operator: `{row['operator']}`",
+                      f"Description: {row['description']}",
+                      f"Baseline: {row['baseline']}",
+                      f"With generated tests: {row['generated']}",
+                      (
+                          "Killed specifically after adding generated tests: "
+                          f"{row['killed_by_generated_tests']}"
+                      ),
+                      "",
+                  ])
+          else:
+              report.extend([
+                  "No Mull mutant was reported on lines 317 or 355.",
+                  "",
+                  "Check the two Mull console logs if this is unexpected.",
+                  "",
+              ])
+
+          report_text = "\n".join(report)
+          Path("target-mutants-comparison.md").write_text(
+              report_text,
+              encoding="utf-8",
+          )
+          print(report_text)
+          PY
+
+      - name: Identify generated tests covering lines 317 and 355
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          TEST_EXECUTABLE="${GITHUB_WORKSPACE}/build-mull-generated/test/unit_tests"
+          SOURCE_FILE_ABS="${GITHUB_WORKSPACE}/${SOURCE_FILE}"
+          RESULTS_DIR="${GITHUB_WORKSPACE}/per-test-coverage"
+
+          mkdir -p "${RESULTS_DIR}"
+          : > tests-covering-target-lines.txt
+          : > tests-not-analysed.txt
+
+          "${TEST_EXECUTABLE}" \
+            --gtest_list_tests \
+            --gtest_color=no \
+            > gtest-list.txt
+
+          awk '
+            /^[^[:space:]]/ {
+              suite = $1
+              sub(/\.$/, "", suite)
+              next
+            }
+            /^[[:space:]]+/ {
+              test = $1
+              sub(/#.*/, "", test)
+              if (suite != "" && test != "") {
+                print suite "." test
+              }
+            }
+          ' gtest-list.txt > selected-tests.txt
+
+          for target_line in ${TARGET_LINES}; do
+            : > "${RESULTS_DIR}/line-${target_line}-tests.txt"
+          done
+
+          index=0
+          while IFS= read -r test_name; do
+            index=$((index + 1))
+            profile_raw="${RESULTS_DIR}/test-${index}.profraw"
+            profile_data="${RESULTS_DIR}/test-${index}.profdata"
+            coverage_text="${RESULTS_DIR}/test-${index}.txt"
+
+            echo "[${index}] ${test_name}"
+
+            if ! LLVM_PROFILE_FILE="${profile_raw}" \
+              "${TEST_EXECUTABLE}" \
+                --gtest_filter="${test_name}" \
+                --gtest_color=no \
+                > /dev/null 2>&1; then
+              echo "${test_name}" >> tests-not-analysed.txt
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            if [ ! -s "${profile_raw}" ]; then
+              echo "${test_name}" >> tests-not-analysed.txt
+              rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+              continue
+            fi
+
+            llvm-profdata-19 merge \
+              -sparse \
+              "${profile_raw}" \
+              -o "${profile_data}"
+
+            llvm-cov-19 show \
+              "${TEST_EXECUTABLE}" \
+              -instr-profile="${profile_data}" \
+              "${SOURCE_FILE_ABS}" \
+              > "${coverage_text}"
+
+            for target_line in ${TARGET_LINES}; do
+              if awk -F'|' -v target_line="${target_line}" '
+                {
+                  line = $1
+                  count = $2
+                  gsub(/[[:space:]]/, "", line)
+                  gsub(/[[:space:]]/, "", count)
+                  if (line == target_line && count != "" && count != "0") {
+                    found = 1
+                  }
+                }
+                END { exit(found ? 0 : 1) }
+              ' "${coverage_text}"; then
+                echo "${test_name}" \
+                  >> "${RESULTS_DIR}/line-${target_line}-tests.txt"
+              fi
+            done
+
+            rm -f "${profile_raw}" "${profile_data}" "${coverage_text}"
+          done < selected-tests.txt
+
+          {
+            for target_line in ${TARGET_LINES}; do
+              echo "Line ${target_line}:"
+              sort -u \
+                "${RESULTS_DIR}/line-${target_line}-tests.txt" \
+                -o "${RESULTS_DIR}/line-${target_line}-tests.txt"
+
+              if [ -s "${RESULTS_DIR}/line-${target_line}-tests.txt" ]; then
+                cat "${RESULTS_DIR}/line-${target_line}-tests.txt"
+              else
+                echo "No individual test found"
+              fi
+              echo
+            done
+          } | tee tests-covering-target-lines.txt
+
+      - name: Add result to workflow summary
+        if: always()
+        shell: bash
+        run: |
+          if [ -f target-mutants-comparison.md ]; then
+            cat target-mutants-comparison.md >> "${GITHUB_STEP_SUMMARY}"
+          else
+            echo "Mull comparison was not generated." >> "${GITHUB_STEP_SUMMARY}"
+          fi
+
+          echo >> "${GITHUB_STEP_SUMMARY}"
+          echo "## Tests covering target lines" >> "${GITHUB_STEP_SUMMARY}"
+          echo >> "${GITHUB_STEP_SUMMARY}"
+          echo '```text' >> "${GITHUB_STEP_SUMMARY}"
+          cat tests-covering-target-lines.txt 2>/dev/null \
+            >> "${GITHUB_STEP_SUMMARY}" \
+            || echo "Coverage report was not generated." \
+            >> "${GITHUB_STEP_SUMMARY}"
+          echo '```' >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload comparison artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintain-power-mull-lines-317-355
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            mull.yml
+            baseline-tests.log
+            generated-tests.log
+            baseline.profdata
+            generated.profdata
+            mull-results-baseline/
+            mull-results-generated/
+            target-mutants-comparison.md
+            target-mutants-comparison.csv
+            tests-covering-target-lines.txt
+            tests-not-analysed.txt
+            selected-tests.txt
+            gtest-list.txt
+            per-test-coverage/line-317-tests.txt
+            per-test-coverage/line-355-tests.txt
