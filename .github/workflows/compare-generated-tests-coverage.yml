@@ -1,0 +1,294 @@
+name: Compare MaintainPower test coverage
+
+on:
+  push:
+    branches:
+      - research/ai-generated-cpp-tests
+    paths:
+      - ".github/workflows/compare-generated-tests-coverage.yml"
+  workflow_dispatch:
+
+jobs:
+  compare-coverage:
+    name: Compare baseline and generated test coverage
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            lcov
+
+      - name: Display tool versions
+        run: |
+          cmake --version
+          ninja --version
+          gcc --version
+          g++ --version
+          lcov --version
+
+      - name: Check required files
+        run: |
+          test -f test/generated_maintain_power_tests.cpp
+          test -f isobus/src/isobus_maintain_power_interface.cpp
+
+      - name: Exclude generated tests from baseline
+        run: |
+          mv test/generated_maintain_power_tests.cpp /tmp/generated_maintain_power_tests.cpp
+
+      - name: Configure baseline build
+        run: |
+          cmake \
+            -S . \
+            -B build-coverage-baseline \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build baseline
+        run: |
+          cmake --build build-coverage-baseline --parallel 2
+
+      - name: Run baseline tests
+        run: |
+          ctest \
+            --test-dir build-coverage-baseline \
+            --output-on-failure
+
+      - name: Capture baseline coverage
+        run: |
+          lcov \
+            --capture \
+            --directory build-coverage-baseline \
+            --output-file baseline-all.info \
+            --rc branch_coverage=1 \
+            --ignore-errors mismatch,inconsistent
+
+          lcov \
+            --extract baseline-all.info \
+            "*/isobus/src/isobus_maintain_power_interface.cpp" \
+            --output-file baseline-maintain-power.info \
+            --rc branch_coverage=1 \
+            --ignore-errors unused,mismatch,inconsistent
+
+          lcov \
+            --summary baseline-maintain-power.info \
+            --rc branch_coverage=1 \
+            | tee baseline-summary.txt
+
+      - name: Restore generated tests
+        run: |
+          mv /tmp/generated_maintain_power_tests.cpp test/generated_maintain_power_tests.cpp
+
+      - name: Configure generated tests build
+        run: |
+          cmake \
+            -S . \
+            -B build-coverage-generated \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build with generated tests
+        run: |
+          cmake --build build-coverage-generated --parallel 2
+
+      - name: Run tests with generated tests
+        run: |
+          ctest \
+            --test-dir build-coverage-generated \
+            --output-on-failure
+
+      - name: Capture generated tests coverage
+        run: |
+          lcov \
+            --capture \
+            --directory build-coverage-generated \
+            --output-file generated-all.info \
+            --rc branch_coverage=1 \
+            --ignore-errors mismatch,inconsistent
+
+          lcov \
+            --extract generated-all.info \
+            "*/isobus/src/isobus_maintain_power_interface.cpp" \
+            --output-file generated-maintain-power.info \
+            --rc branch_coverage=1 \
+            --ignore-errors unused,mismatch,inconsistent
+
+          lcov \
+            --summary generated-maintain-power.info \
+            --rc branch_coverage=1 \
+            | tee generated-summary.txt
+
+      - name: Compare coverage
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          def parse_lcov(file_path):
+              lines = {}
+              branches = {}
+              content = Path(file_path).read_text(encoding="utf-8", errors="replace")
+
+              for record in content.splitlines():
+                  if record.startswith("DA:"):
+                      fields = record[3:].split(",")
+                      lines[int(fields[0])] = int(fields[1])
+                  elif record.startswith("BRDA:"):
+                      fields = record[5:].split(",")
+                      if len(fields) != 4:
+                          continue
+                      key = (int(fields[0]), fields[1], fields[2])
+                      branches[key] = 0 if fields[3] == "-" else int(fields[3])
+
+              return lines, branches
+
+          def percentage(covered, total):
+              return 100.0 if total == 0 else 100.0 * covered / total
+
+          baseline_lines, baseline_branches = parse_lcov(
+              "baseline-maintain-power.info"
+          )
+          generated_lines, generated_branches = parse_lcov(
+              "generated-maintain-power.info"
+          )
+
+          all_lines = sorted(set(baseline_lines) | set(generated_lines))
+          all_branches = sorted(set(baseline_branches) | set(generated_branches))
+
+          baseline_covered_lines = sum(
+              baseline_lines.get(line, 0) > 0 for line in all_lines
+          )
+          generated_covered_lines = sum(
+              generated_lines.get(line, 0) > 0 for line in all_lines
+          )
+          newly_covered_lines = [
+              line for line in all_lines
+              if baseline_lines.get(line, 0) == 0
+              and generated_lines.get(line, 0) > 0
+          ]
+          lines_no_longer_covered = [
+              line for line in all_lines
+              if baseline_lines.get(line, 0) > 0
+              and generated_lines.get(line, 0) == 0
+          ]
+
+          baseline_covered_branches = sum(
+              baseline_branches.get(branch, 0) > 0 for branch in all_branches
+          )
+          generated_covered_branches = sum(
+              generated_branches.get(branch, 0) > 0 for branch in all_branches
+          )
+          newly_covered_branches = [
+              branch for branch in all_branches
+              if baseline_branches.get(branch, 0) == 0
+              and generated_branches.get(branch, 0) > 0
+          ]
+
+          total_lines = len(all_lines)
+          total_branches = len(all_branches)
+          baseline_line_pct = percentage(baseline_covered_lines, total_lines)
+          generated_line_pct = percentage(generated_covered_lines, total_lines)
+          baseline_branch_pct = percentage(
+              baseline_covered_branches, total_branches
+          )
+          generated_branch_pct = percentage(
+              generated_covered_branches, total_branches
+          )
+
+          report = [
+              "# MaintainPowerInterface coverage comparison",
+              "",
+              "Target file: `isobus/src/isobus_maintain_power_interface.cpp`",
+              "",
+              "## Line coverage",
+              "",
+              f"Baseline: {baseline_covered_lines}/{total_lines} "
+              f"({baseline_line_pct:.2f}%)",
+              f"With generated tests: {generated_covered_lines}/{total_lines} "
+              f"({generated_line_pct:.2f}%)",
+              f"Difference: {generated_line_pct - baseline_line_pct:+.2f} "
+              "percentage points",
+              f"Newly covered lines: {len(newly_covered_lines)}",
+              "",
+              "## Branch coverage",
+              "",
+              f"Baseline: {baseline_covered_branches}/{total_branches} "
+              f"({baseline_branch_pct:.2f}%)",
+              f"With generated tests: {generated_covered_branches}/{total_branches} "
+              f"({generated_branch_pct:.2f}%)",
+              f"Difference: {generated_branch_pct - baseline_branch_pct:+.2f} "
+              "percentage points",
+              f"Newly covered branches: {len(newly_covered_branches)}",
+              "",
+              "## Newly covered source lines",
+              "",
+              ", ".join(map(str, newly_covered_lines)) or "None",
+              "",
+              "## Lines no longer covered",
+              "",
+              ", ".join(map(str, lines_no_longer_covered)) or "None",
+              "",
+              "## Newly covered branches",
+              ""
+          ]
+
+          if newly_covered_branches:
+              report.extend(
+                  f"Line {line}, block {block}, branch {branch}"
+                  for line, block, branch in newly_covered_branches
+              )
+          else:
+              report.append("None")
+
+          report_text = "\n".join(report) + "\n"
+          Path("coverage-comparison.md").write_text(
+              report_text,
+              encoding="utf-8"
+          )
+          print(report_text)
+          PY
+
+      - name: Add comparison to workflow summary
+        run: |
+          cat coverage-comparison.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Generate baseline HTML report
+        run: |
+          genhtml \
+            baseline-maintain-power.info \
+            --output-directory coverage-html-baseline \
+            --branch-coverage \
+            --ignore-errors inconsistent
+
+      - name: Generate generated tests HTML report
+        run: |
+          genhtml \
+            generated-maintain-power.info \
+            --output-directory coverage-html-generated \
+            --branch-coverage \
+            --ignore-errors inconsistent
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintain-power-coverage-comparison
+          if-no-files-found: error
+          retention-days: 30
+          path: |
+            baseline-maintain-power.info
+            generated-maintain-power.info
+            baseline-summary.txt
+            generated-summary.txt
+            coverage-comparison.md
+            coverage-html-baseline/
+            coverage-html-generated/
