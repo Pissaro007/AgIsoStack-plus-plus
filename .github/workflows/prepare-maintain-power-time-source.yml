@@ -1,0 +1,105 @@
+name: Prepare MaintainPower TimeSource context
+
+on:
+  push:
+    branches:
+      - research/ai-generated-cpp-tests
+    paths:
+      - ".github/workflows/prepare-maintain-power-time-source.yml"
+
+  workflow_dispatch:
+
+jobs:
+  prepare-time-source-context:
+    name: Prepare TimeSource API supplement
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Record experiment revision
+        shell: bash
+        run: |
+          echo "Repository: $GITHUB_REPOSITORY"
+          echo "Branch: $GITHUB_REF_NAME"
+          echo "Commit: $GITHUB_SHA"
+
+      - name: Verify TimeSource header
+        shell: bash
+        run: |
+          file="utility/include/isobus/utility/time_source.hpp"
+
+          if [ ! -f "$file" ]; then
+            echo "ERROR: Required file not found: $file"
+            exit 1
+          fi
+
+          echo "TimeSource header found: $file"
+
+      - name: Create TimeSource context supplement
+        shell: bash
+        run: |
+          source_file="utility/include/isobus/utility/time_source.hpp"
+          output_file="maintain-power-time-source-context.txt"
+
+          {
+            echo "MAINTAIN POWER INTERFACE EXPERIMENT"
+            echo "TIME SOURCE API SUPPLEMENT"
+            echo
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo
+            echo "This supplement belongs with:"
+            echo "maintain-power-gpt-context.txt"
+            echo
+            echo "=================================================="
+            echo "BEGIN FILE: $source_file"
+            echo "=================================================="
+            cat "$source_file"
+            echo
+            echo "=================================================="
+            echo "END FILE: $source_file"
+            echo "=================================================="
+          } > "$output_file"
+
+      - name: Verify generated context
+        shell: bash
+        run: |
+          output_file="maintain-power-time-source-context.txt"
+
+          if [ ! -s "$output_file" ]; then
+            echo "ERROR: Generated TimeSource context is empty."
+            exit 1
+          fi
+
+          if ! grep -q "class TimeSource" "$output_file"; then
+            echo "ERROR: TimeSource class declaration was not found."
+            exit 1
+          fi
+
+          echo "TimeSource context was generated successfully."
+          wc -l "$output_file"
+          wc -c "$output_file"
+
+      - name: Generate SHA-256 checksum
+        shell: bash
+        run: |
+          sha256sum \
+            maintain-power-time-source-context.txt \
+            > maintain-power-time-source-context.sha256.txt
+
+          cat maintain-power-time-source-context.sha256.txt
+
+      - name: Upload TimeSource context supplement
+        uses: actions/upload-artifact@v4
+        with:
+          name: maintain-power-time-source-context
+          path: |
+            maintain-power-time-source-context.txt
+            maintain-power-time-source-context.sha256.txt
+          if-no-files-found: error
+          retention-days: 30
