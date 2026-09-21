@@ -218,12 +218,42 @@ jobs:
             -type f \
             | sort
 
+      - name: Create single text context file
+        shell: bash
+        run: |
+          output="experiment-package/maintain-power-gpt-context.txt"
+
+          {
+            echo "MAINTAIN POWER INTERFACE EXPERIMENT"
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo
+
+            while IFS= read -r file; do
+              echo
+              echo "=================================================="
+              echo "BEGIN FILE: $file"
+              echo "=================================================="
+              cat "$file"
+              echo
+              echo "=================================================="
+              echo "END FILE: $file"
+              echo "=================================================="
+            done < <(
+              find experiment-package/gpt-context \
+                -type f \
+                | sort
+            )
+          } > "$output"
+          
       - name: Upload GPT context
         uses: actions/upload-artifact@v4
         with:
           name: gpt-context-maintain-power
           path: |
             experiment-package/gpt-context
+            experiment-package/maintain-power-gpt-context.txt
             experiment-package/metadata/revision.txt
             experiment-package/metadata/gpt-context-manifest.txt
             experiment-package/metadata/gpt-context-sha256.txt
