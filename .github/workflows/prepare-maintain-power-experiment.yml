@@ -1,0 +1,242 @@
+name: Prepare MaintainPowerInterface experiment
+
+on:
+  push:
+    branches:
+      - research/ai-generated-cpp-tests
+    paths:
+      - ".github/workflows/prepare-maintain-power-experiment.yml"
+
+  workflow_dispatch:
+
+jobs:
+  prepare-experiment:
+    name: Prepare GPT context and human reference
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Create experiment directories
+        run: |
+          mkdir -p experiment-package/gpt-context
+          mkdir -p experiment-package/human-reference
+          mkdir -p experiment-package/metadata
+
+      - name: Record experiment revision
+        run: |
+          {
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo "Target class: MaintainPowerInterface"
+            echo "Generated at UTC: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          } > experiment-package/metadata/revision.txt
+
+      - name: Copy target production files
+        run: |
+          cp --parents \
+            isobus/include/isobus/isobus/isobus_maintain_power_interface.hpp \
+            isobus/src/isobus_maintain_power_interface.cpp \
+            experiment-package/gpt-context/
+
+      - name: Copy direct public dependency headers
+        run: |
+          cp --parents \
+            isobus/include/isobus/isobus/can_callbacks.hpp \
+            isobus/include/isobus/isobus/can_constants.hpp \
+            isobus/include/isobus/isobus/can_control_function.hpp \
+            isobus/include/isobus/isobus/can_general_parameter_group_numbers.hpp \
+            isobus/include/isobus/isobus/can_identifier.hpp \
+            isobus/include/isobus/isobus/can_internal_control_function.hpp \
+            isobus/include/isobus/isobus/can_message.hpp \
+            isobus/include/isobus/isobus/can_network_manager.hpp \
+            experiment-package/gpt-context/
+
+      - name: Locate and copy utility dependency headers
+        run: |
+          while IFS= read -r file; do
+            cp --parents "$file" experiment-package/gpt-context/
+          done < <(
+            find utility isobus \
+              -type f \
+              \( \
+                -name "event_dispatcher.hpp" \
+                -o -name "processing_flags.hpp" \
+                -o -name "system_timing.hpp" \
+              \) \
+              | sort
+          )
+
+      - name: Copy build configuration
+        run: |
+          cp CMakeLists.txt experiment-package/gpt-context/
+
+          if [ -f isobus/CMakeLists.txt ]; then
+            cp --parents \
+              isobus/CMakeLists.txt \
+              experiment-package/gpt-context/
+          fi
+
+          if [ -f test/CMakeLists.txt ]; then
+            cp --parents \
+              test/CMakeLists.txt \
+              experiment-package/gpt-context/
+          fi
+
+      - name: Create build instructions
+        run: |
+          cat > experiment-package/gpt-context/BUILD_INSTRUCTIONS.md <<'EOF'
+          # Build instructions
+
+          The repository uses CMake, CTest, and GoogleTest.
+
+          Baseline configuration:
+
+          ```bash
+          cmake -S . -B build -G Ninja -DBUILD_TESTING=ON -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build --parallel 2
+          ctest --test-dir build --output-on-failure
+          ```
+
+          Experimental constraints:
+
+          - Target class: `MaintainPowerInterface`
+          - Do not modify production code.
+          - Do not modify an existing production header.
+          - Do not inspect or reproduce existing tests for this class.
+          - Generate a new GoogleTest source file.
+          - Use only APIs that exist in the supplied files.
+          - Clearly report missing contextual information.
+          - Clearly distinguish facts from assumptions.
+          EOF
+
+      - name: Create allowed context manifest
+        run: |
+          {
+            echo "MaintainPowerInterface GPT context"
+            echo
+            echo "Repository: $GITHUB_REPOSITORY"
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo
+            echo "Files supplied to the model:"
+            find experiment-package/gpt-context \
+              -type f \
+              | sort
+          } > experiment-package/metadata/gpt-context-manifest.txt
+
+      - name: Verify that existing tests are excluded from GPT context
+        run: |
+          if find experiment-package/gpt-context \
+            -type f \
+            -name "*maintain_power_tests*" \
+            | grep -q .; then
+            echo "ERROR: Existing Maintain Power tests are present in GPT context."
+            exit 1
+          fi
+
+          if grep -RIl \
+            "MaintainPowerInterfaceTest" \
+            experiment-package/gpt-context \
+            | grep -q .; then
+            echo "ERROR: Existing test implementation appears in GPT context."
+            exit 1
+          fi
+
+          echo "Existing Maintain Power tests are excluded from GPT context."
+
+      - name: Copy human reference test
+        run: |
+          cp --parents \
+            test/maintain_power_tests.cpp \
+            experiment-package/human-reference/
+
+      - name: Copy test helper files for later evaluation
+        run: |
+          if [ -d test/helpers ]; then
+            cp -R \
+              test/helpers \
+              experiment-package/human-reference/
+          fi
+
+          if [ -f test/CMakeLists.txt ]; then
+            cp --parents \
+              test/CMakeLists.txt \
+              experiment-package/human-reference/
+          fi
+
+      - name: Create human reference notice
+        run: |
+          cat > experiment-package/human-reference/DO_NOT_PROVIDE_TO_MODEL.md <<'EOF'
+          # Human reference only
+
+          This directory contains pre-existing project tests and test helpers.
+
+          Do not provide this directory or any of its contents to GPT-5.6 during
+          the independent generation phase.
+
+          It may only be consulted after the generated test has been recorded,
+          compiled, executed, and evaluated independently.
+          EOF
+
+      - name: Create SHA-256 checksums
+        run: |
+          find experiment-package/gpt-context \
+            -type f \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > experiment-package/metadata/gpt-context-sha256.txt
+
+          find experiment-package/human-reference \
+            -type f \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > experiment-package/metadata/human-reference-sha256.txt
+
+      - name: Display final package contents
+        run: |
+          echo "GPT CONTEXT"
+          find experiment-package/gpt-context \
+            -type f \
+            | sort
+
+          echo
+          echo "HUMAN REFERENCE"
+          find experiment-package/human-reference \
+            -type f \
+            | sort
+
+          echo
+          echo "METADATA"
+          find experiment-package/metadata \
+            -type f \
+            | sort
+
+      - name: Upload GPT context
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-context-maintain-power
+          path: |
+            experiment-package/gpt-context
+            experiment-package/metadata/revision.txt
+            experiment-package/metadata/gpt-context-manifest.txt
+            experiment-package/metadata/gpt-context-sha256.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload human reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-reference-maintain-power
+          path: |
+            experiment-package/human-reference
+            experiment-package/metadata/revision.txt
+            experiment-package/metadata/human-reference-sha256.txt
+          if-no-files-found: error
+          retention-days: 30
