@@ -41,9 +41,13 @@ jobs:
           test -f test/generated_maintain_power_tests.cpp
           test -f isobus/src/isobus_maintain_power_interface.cpp
 
-      - name: Exclude generated tests from baseline
+      - name: Replace generated tests with empty source for baseline
         run: |
-          mv test/generated_maintain_power_tests.cpp /tmp/generated_maintain_power_tests.cpp
+          cp \
+            test/generated_maintain_power_tests.cpp \
+            /tmp/generated_maintain_power_tests.cpp
+
+          : > test/generated_maintain_power_tests.cpp
 
       - name: Configure baseline build
         run: |
@@ -87,8 +91,10 @@ jobs:
 
       - name: Restore generated tests
         run: |
-          mv /tmp/generated_maintain_power_tests.cpp test/generated_maintain_power_tests.cpp
-
+          cp \
+            /tmp/generated_maintain_power_tests.cpp \
+            test/generated_maintain_power_tests.cpp
+            
       - name: Configure generated tests build
         run: |
           cmake \
