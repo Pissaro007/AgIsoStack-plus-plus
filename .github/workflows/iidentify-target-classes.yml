@@ -1,0 +1,158 @@
+name: Identify candidate C++ classes
+
+on:
+  push:
+    branches:
+      - research/ai-generated-cpp-tests
+    paths:
+      - ".github/workflows/identify-target-classes.yml"
+
+  workflow_dispatch:
+
+jobs:
+  identify-candidates:
+    name: Analyze production classes and tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Record experiment revision
+        run: |
+          {
+            echo "Branch: $GITHUB_REF_NAME"
+            echo "Commit: $GITHUB_SHA"
+            echo
+          } | tee candidate-classes-report.txt
+
+      - name: List production source files
+        run: |
+          {
+            echo "=================================================="
+            echo "PRODUCTION SOURCE FILES"
+            echo "=================================================="
+            find isobus/src -type f \
+              \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) \
+              | sort
+            echo
+          } | tee -a candidate-classes-report.txt
+
+      - name: List production header files
+        run: |
+          {
+            echo "=================================================="
+            echo "PRODUCTION HEADER FILES"
+            echo "=================================================="
+            find isobus/include -type f \
+              \( -name "*.hpp" -o -name "*.h" \) \
+              | sort
+            echo
+          } | tee -a candidate-classes-report.txt
+
+      - name: Collect source file metrics
+        run: |
+          {
+            echo "=================================================="
+            echo "SOURCE FILE METRICS"
+            echo "Format: lines branches callbacks shared_ptr weak_ptr"
+            echo "=================================================="
+
+            find isobus/src -type f \
+              \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) \
+              -print0 |
+            while IFS= read -r -d '' file; do
+              lines=$(wc -l < "$file")
+              branches=$(grep -Ec \
+                '(^|]' \
+                "$file" || true
+              callbacks=$(grep -Eic \
+                'callback|event_dispatcher|add_listener|remove_listener' \
+                "$file" || true)
+              shared_ptrs=$(grep -Ec 'shared_ptr' "$file" || true)
+              weak_ptrs=$(grep -Ec 'weak_ptr' "$file" || true)
+
+              printf "%5d %4d %4d %4d %4d %s\n" \
+                "$lines" \
+                "$branches" \
+                "$callbacks" \
+                "$shared_ptrs" \
+                "$weak_ptrs" \
+                "$file"
+            done | sort -nr
+
+            echo
+          } | tee -a candidate-classes-report.txt
+
+      - name: Identify dependency indicators
+        run: |
+          {
+            echo "=================================================="
+            echo "DEPENDENCY INDICATORS"
+            echo "=================================================="
+
+            grep -RInE \
+              'CANNetworkManager|ControlFunction|InternalControlFunction|PartneredControlFunction|EventDispatcher|SystemTiming|CANMessage|callback|Callback' \
+              isobus/src isobus/include \
+              --include="*.cpp" \
+              --include="*.hpp" \
+              --include="*.h" \
+              || true
+
+            echo
+          } | tee -a candidate-classes-report.txt
+
+      - name: Map production files to existing tests
+        run: |
+          {
+            echo "=================================================="
+            echo "POSSIBLE SOURCE TO TEST CORRESPONDENCE"
+            echo "=================================================="
+
+            find isobus/src -type f \
+              \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) \
+              -print0 |
+            while IFS= read -r -d '' file; do
+              base=$(basename "$file")
+              stem=${base%.*}
+
+              matches=$(grep -RIl \
+                "$stem" \
+                test \
+                --include="*.cpp" \
+                --include="*.hpp" \
+                --include="*.h" \
+                2>/dev/null || true)
+
+              if [ -n "$matches" ]; then
+                echo
+                echo "Production file: $file"
+                echo "$matches" | sed 's/^/  Possible test file: /'
+              fi
+            done
+
+            echo
+          } | tee -a candidate-classes-report.txt
+
+      - name: List existing test files
+        run: |
+          {
+            echo "=================================================="
+            echo "EXISTING TEST FILES"
+            echo "=================================================="
+
+            find test -type f \
+              \( -name "*.cpp" -o -name "*.hpp" -o -name "*.h" \) \
+              | sort
+
+            echo
+          } | tee -a candidate-classes-report.txt
+
+      - name: Upload candidate analysis report
+        uses: actions/upload-artifact@v4
+        with:
+          name: candidate-classes-report
+          path: candidate-classes-report.txt
+          if-no-files-found: error
