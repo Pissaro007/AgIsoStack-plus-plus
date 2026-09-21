@@ -1,6 +1,12 @@
 name: Compile and test AgIsoStack++
 
 on:
+  push:
+    branches:
+      - research/ai-generated-cpp-tests
+    paths:
+      - '.github/workflows/compile-and-test.yml'
+
   workflow_dispatch:
 
 jobs:
