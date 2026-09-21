@@ -53,39 +53,42 @@ jobs:
           } | tee -a candidate-classes-report.txt
 
       - name: Collect source file metrics
+        shell: bash
         run: |
-          {
-            echo "=================================================="
-            echo "SOURCE FILE METRICS"
-            echo "Format: lines branches callbacks shared_ptr weak_ptr"
-            echo "=================================================="
+          echo "==================================================" | tee -a candidate-classes-report.txt
+          echo "SOURCE FILE METRICS" | tee -a candidate-classes-report.txt
+          echo "Format: lines branches callbacks shared_ptr weak_ptr file" | tee -a candidate-classes-report.txt
+          echo "==================================================" | tee -a candidate-classes-report.txt
 
+          while IFS= read -r file; do
+            lines=$(wc -l < "$file")
+
+            branches=$(grep -Eic \
+              'if[[:space:]]*\(|else|switch[[:space:]]*\(|case[[:space:]]|for[[:space:]]*\(|while[[:space:]]*\(|catch[[:space:]]*\(' \
+              "$file" || true)
+
+            callbacks=$(grep -Eic \
+              'callback|event_dispatcher|add_listener|remove_listener' \
+              "$file" || true)
+
+            shared_ptrs=$(grep -Ec 'shared_ptr' "$file" || true)
+            weak_ptrs=$(grep -Ec 'weak_ptr' "$file" || true)
+
+            printf "%5d %4d %4d %4d %4d %s\n" \
+              "$lines" \
+              "$branches" \
+              "$callbacks" \
+              "$shared_ptrs" \
+              "$weak_ptrs" \
+              "$file"
+          done < <(
             find isobus/src -type f \
               \( -name "*.cpp" -o -name "*.cc" -o -name "*.cxx" \) \
-              -print0 |
-            while IFS= read -r -d '' file; do
-              lines=$(wc -l < "$file")
-              branches=$(grep -Ec \
-                '(^|]' \
-                "$file" || true
-              callbacks=$(grep -Eic \
-                'callback|event_dispatcher|add_listener|remove_listener' \
-                "$file" || true)
-              shared_ptrs=$(grep -Ec 'shared_ptr' "$file" || true)
-              weak_ptrs=$(grep -Ec 'weak_ptr' "$file" || true)
+              | sort
+          ) | sort -nr | tee -a candidate-classes-report.txt
 
-              printf "%5d %4d %4d %4d %4d %s\n" \
-                "$lines" \
-                "$branches" \
-                "$callbacks" \
-                "$shared_ptrs" \
-                "$weak_ptrs" \
-                "$file"
-            done | sort -nr
-
-            echo
-          } | tee -a candidate-classes-report.txt
-
+          echo | tee -a candidate-classes-report.txt
+          
       - name: Identify dependency indicators
         run: |
           {
