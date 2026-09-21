@@ -2,6 +2,7 @@ name: Compile and test AgIsoStack++
 
 # Manual trigger for initial GPT-generated test evaluation
 # Manual trigger for first manual correction of GPT-generated test evaluation
+# Manual trigger 2 for first manual correction of GPT-generated test evaluation
 
 on:
   push:
