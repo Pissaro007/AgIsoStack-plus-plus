@@ -378,7 +378,7 @@ TEST(MaintainPowerInterfaceTests,
 
 	const isobus::EventCallbackHandle listener =
 	  interfaceUnderTest.get_maintain_power_data_event_publisher().add_listener(
-	    const std::shared_ptr<MaintainPowerData> &,
+	    [&notificationCount]<MaintainPowerData> &,
 	      const bool & {
 		    ++notificationCount;
 	    });
@@ -407,7 +407,7 @@ TEST(MaintainPowerInterfaceTests,
 
 	const isobus::EventCallbackHandle listener =
 	  interfaceUnderTest.get_maintain_power_data_event_publisher().add_listener(
-	    const std::shared_ptr<MaintainPowerData> &,
+	   [&notificationCount]<MaintainPowerData> &,
 	      const bool & {
 		    ++notificationCount;
 	    });
@@ -513,7 +513,7 @@ TEST(MaintainPowerInterfaceTests,
 
 	const isobus::EventCallbackHandle listener =
 	  interfaceUnderTest.get_maintain_power_data_event_publisher().add_listener(
-	    const std::shared_ptr<MaintainPowerData> &,
+	    [&notificationCount]<MaintainPowerData> &,
 	      const bool & {
 		    ++notificationCount;
 	    });
