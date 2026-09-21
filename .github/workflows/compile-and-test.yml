@@ -1,0 +1,49 @@
+name: Compile and test AgIsoStack++
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    name: Build and run existing tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build
+
+      - name: Display tool versions
+        run: |
+          cmake --version
+          ninja --version
+          gcc --version
+          g++ --version
+
+      - name: Configure project
+        run: |
+          cmake \
+            -S . \
+            -B build \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build project
+        run: |
+          cmake --build build --parallel 2
+
+      - name: Run existing tests
+        run: |
+          ctest \
+            --test-dir build \
+            --output-on-failure
