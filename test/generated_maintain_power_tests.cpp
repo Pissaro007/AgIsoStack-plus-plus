@@ -126,8 +126,8 @@ namespace isobus
 		interface.initialize();
 
 		EXPECT_EQ(interface.get_number_received_maintain_power_sources(), 0U);
-		EXPECT_EQ(interface.get_received_maintain_power_data(0U), nullptr);
-		EXPECT_EQ(interface.get_received_maintain_power_data(999U), nullptr);
+		EXPECT_EQ(interface.get_received_maintain_power(0U), nullptr);
+		EXPECT_EQ(interface.get_received_maintain_power(999U), nullptr);
 	}
 
 	// 6. Enregistrement des callbacks via Event Publisher
@@ -151,8 +151,8 @@ namespace isobus
 		TestableMaintainPowerInterface interface(internalCF1);
 		interface.initialize();
 
-		interface.get_maintain_power_data()->set_maintain_ecu_power(MaintainPowerInterface::MaintainPowerData::MaintainECUPower::RequirementFor2SecondsMoreForECU_PWR);
-		interface.get_maintain_power_data()->set_maintain_actuator_power(MaintainPowerInterface::MaintainPowerData::MaintainActuatorPower::RequirementFor2SecondsMoreForPWR);
+		interface.get_maintain_power()->set_maintain_ecu_power(MaintainPowerInterface::MaintainPowerData::MaintainECUPower::RequirementFor2SecondsMoreForECU_PWR);
+		interface.get_maintain_power()->set_maintain_actuator_power(MaintainPowerInterface::MaintainPowerData::MaintainActuatorPower::RequirementFor2SecondsMoreForPWR);
 
 		EXPECT_TRUE(interface.send_maintain_power());
 	}
