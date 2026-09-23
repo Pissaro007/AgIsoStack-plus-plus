@@ -2,6 +2,7 @@ name: Compile and test AgIsoStack++
 
 #ci: trigger build after first Gemini correction
 #ci: rerun build after first Gemini correction
+#ci: rerun build after second Gemini correction
 
 on:
   push:
