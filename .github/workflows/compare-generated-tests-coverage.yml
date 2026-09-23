@@ -3,7 +3,7 @@ name: Compare MaintainPower test coverage
 on:
   push:
     branches:
-      - research/maintain-power-gemini
+      - research/maintain-power-plus-gemini
     paths:
       - ".github/workflows/compare-generated-tests-coverage.yml"
   workflow_dispatch:
