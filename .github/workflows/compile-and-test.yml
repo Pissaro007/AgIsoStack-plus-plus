@@ -1,5 +1,7 @@
 name: Compile and test AgIsoStack++
 
+#ci: trigger build after first Gemini correction
+
 on:
   push:
     branches:
