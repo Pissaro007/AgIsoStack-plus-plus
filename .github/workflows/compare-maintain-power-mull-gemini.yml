@@ -151,6 +151,7 @@ jobs:
 
           mull-runner-19 \
             --allow-surviving \
+            --ide-reporter-show-killed \
             --debug \
             --timeout 120000 \
             --coverage-info "${GITHUB_WORKSPACE}/baseline.profdata" \
@@ -230,6 +231,7 @@ jobs:
 
           mull-runner-19 \
             --allow-surviving \
+            --ide-reporter-show-killed \
             --debug \
             --timeout 120000 \
             --coverage-info "${GITHUB_WORKSPACE}/generated.profdata" \
@@ -253,11 +255,12 @@ jobs:
           from pathlib import Path
 
           source_file = os.environ["SOURCE_FILE"].replace("\\", "/")
-          pattern = re.compile(
-              r"^(.*?):(\d+):(\d+):\s+"
-              r"(?:warning|remark|note|info):\s+"
-              r"(Killed|Survived|Timeout|Timedout):\s+"
-              r"(.*?)\s+\[([^\]]+)\]\s*$",
+          location_pattern = re.compile(
+              r"^(.*?):(\d+):(\d+):\s+(?:warning|remark|note|info):\s+(.*)$",
+              re.IGNORECASE,
+          )
+          status_pattern = re.compile(
+              r"^(?:(Killed|Survived|Timeout|Timedout):\s+)?(.*?)\s+\[([^\]]+)\]\s*$",
               re.IGNORECASE,
           )
 
@@ -273,13 +276,27 @@ jobs:
               mutants = {}
               text = Path(path).read_text(encoding="utf-8", errors="replace")
               for raw_line in text.splitlines():
-                  match = pattern.match(raw_line.strip())
-                  if not match:
+                  location_match = location_pattern.match(raw_line.strip())
+                  if not location_match:
                       continue
-                  path_value, line, column, status, description, operator = match.groups()
+                  path_value, line, column, payload = location_match.groups()
                   normalized_path = path_value.replace("\\", "/")
                   if not normalized_path.endswith(source_file):
                       continue
+                  status_match = status_pattern.match(payload)
+                  if not status_match:
+                      continue
+                  status, description, operator = status_match.groups()
+                  if status is None:
+                      lowered_payload = payload.lower()
+                      if "survived" in lowered_payload:
+                          status = "Survived"
+                      elif "killed" in lowered_payload:
+                          status = "Killed"
+                      elif "timeout" in lowered_payload or "timedout" in lowered_payload:
+                          status = "Timeout"
+                      else:
+                          continue
                   key = (
                       int(line),
                       int(column),
@@ -391,6 +408,20 @@ jobs:
           print(report_text)
 
           if not baseline or not generated:
+              print("\n=== Candidate Mull IDE lines from baseline ===")
+              baseline_text = Path("mull-results-baseline/mull-console.log").read_text(
+                  encoding="utf-8", errors="replace"
+              )
+              for line in baseline_text.splitlines():
+                  if source_file.split("/")[-1] in line or "Mutation score" in line:
+                      print(line)
+              print("\n=== Candidate Mull IDE lines from generated run ===")
+              generated_text = Path("mull-results-generated/mull-console.log").read_text(
+                  encoding="utf-8", errors="replace"
+              )
+              for line in generated_text.splitlines():
+                  if source_file.split("/")[-1] in line or "Mutation score" in line:
+                      print(line)
               raise SystemExit(
                   "No MaintainPower mutants were parsed from one or both Mull logs."
               )
