@@ -1,4 +1,4 @@
-name: Compare Mull on MaintainPower baseline and Gemini tests
+name: Compare MaintainPower Mull baseline and Gemini tests
 
 on:
   push:
@@ -152,7 +152,6 @@ jobs:
 
           mull-runner-19 \
             --allow-surviving \
-            --ide-reporter-show-killed \
             --debug \
             --timeout 120000 \
             --coverage-info "${GITHUB_WORKSPACE}/baseline.profdata" \
@@ -234,7 +233,6 @@ jobs:
 
           mull-runner-19 \
             --allow-surviving \
-            --ide-reporter-show-killed \
             --debug \
             --timeout 120000 \
             --coverage-info "${GITHUB_WORKSPACE}/generated.profdata" \
@@ -259,55 +257,35 @@ jobs:
           from pathlib import Path
 
           source_file = os.environ["SOURCE_FILE"].replace("\\", "/")
-          location_pattern = re.compile(
-              r"^(.*?):(\d+):(\d+):\s+(?:warning|remark|note|info):\s+(.*)$",
+          result_pattern = re.compile(
+              r"^\[debug\]\s+\[\d+/\d+\]\s+"
+              r"([^:]+):(.*?):(\d+):(\d+):(\d+):(\d+)\s+"
+              r"->\s+(Passed|Failed)(?:,|\s|$)",
               re.IGNORECASE,
           )
-          status_pattern = re.compile(
-              r"^(?:(Killed|Survived|Timeout|Timedout):\s+)?(.*?)\s+\[([^\]]+)\]\s*$",
-              re.IGNORECASE,
-          )
-
-          def normalize_status(status):
-              value = status.lower()
-              if value == "killed":
-                  return "Killed"
-              if value == "survived":
-                  return "Survived"
-              return "Timeout"
 
           def parse_log(path):
               mutants = {}
               text = Path(path).read_text(encoding="utf-8", errors="replace")
               for raw_line in text.splitlines():
-                  location_match = location_pattern.match(raw_line.strip())
-                  if not location_match:
+                  match = result_pattern.match(raw_line.strip())
+                  if not match:
                       continue
-                  path_value, line, column, payload = location_match.groups()
+                  operator, path_value, line, column, end_line, end_column, outcome = match.groups()
                   normalized_path = path_value.replace("\\", "/")
                   if not normalized_path.endswith(source_file):
                       continue
-                  status_match = status_pattern.match(payload)
-                  if not status_match:
-                      continue
-                  status, description, operator = status_match.groups()
-                  if status is None:
-                      lowered_payload = payload.lower()
-                      if "survived" in lowered_payload:
-                          status = "Survived"
-                      elif "killed" in lowered_payload:
-                          status = "Killed"
-                      elif "timeout" in lowered_payload or "timedout" in lowered_payload:
-                          status = "Timeout"
-                      else:
-                          continue
+                  # Mull debug semantics: Passed means the mutant survived;
+                  # Failed means the test suite killed the mutant.
+                  status = "Survived" if outcome.lower() == "passed" else "Killed"
                   key = (
                       int(line),
                       int(column),
+                      int(end_line),
+                      int(end_column),
                       operator.strip(),
-                      description.strip(),
                   )
-                  mutants[key] = normalize_status(status)
+                  mutants[key] = status
               return mutants
 
           baseline = parse_log("mull-results-baseline/mull-console.log")
@@ -316,14 +294,15 @@ jobs:
 
           rows = []
           for key in all_keys:
-              line, column, operator, description = key
+              line, column, end_line, end_column, operator = key
               baseline_status = baseline.get(key, "Not reported")
               generated_status = generated.get(key, "Not reported")
               rows.append({
                   "line": line,
                   "column": column,
+                  "end_line": end_line,
+                  "end_column": end_column,
                   "operator": operator,
-                  "description": description,
                   "baseline": baseline_status,
                   "generated": generated_status,
                   "killed_by_generated_tests": (
@@ -337,7 +316,7 @@ jobs:
               "w", newline="", encoding="utf-8"
           ) as output_file:
               writer = csv.DictWriter(output_file, fieldnames=[
-                  "line", "column", "operator", "description",
+                  "line", "column", "end_line", "end_column", "operator",
                   "baseline", "generated", "killed_by_generated_tests",
               ])
               writer.writeheader()
@@ -352,11 +331,8 @@ jobs:
               row for row in rows if row["baseline"] != row["generated"]
           ]
 
-          def executed(counts):
-              return counts["Killed"] + counts["Survived"] + counts["Timeout"]
-
           def score(counts):
-              total = executed(counts)
+              total = counts["Killed"] + counts["Survived"]
               return 0.0 if total == 0 else 100.0 * counts["Killed"] / total
 
           report = [
@@ -366,20 +342,16 @@ jobs:
               "",
               "## Baseline: human tests only",
               "",
-              f"Mutants reported: {len(baseline)}",
-              f"Mutants executed: {executed(baseline_counts)}",
+              f"Mutants executed: {len(baseline)}",
               f"Killed: {baseline_counts['Killed']}",
               f"Survived: {baseline_counts['Survived']}",
-              f"Timeout: {baseline_counts['Timeout']}",
               f"Mutation score: {score(baseline_counts):.2f}%",
               "",
               "## Human tests plus corrected Gemini tests",
               "",
-              f"Mutants reported: {len(generated)}",
-              f"Mutants executed: {executed(generated_counts)}",
+              f"Mutants executed: {len(generated)}",
               f"Killed: {generated_counts['Killed']}",
               f"Survived: {generated_counts['Survived']}",
-              f"Timeout: {generated_counts['Timeout']}",
               f"Mutation score: {score(generated_counts):.2f}%",
               "",
               "## Comparison",
@@ -397,13 +369,14 @@ jobs:
                       f"### Line {row['line']}, column {row['column']}",
                       "",
                       f"Operator: `{row['operator']}`",
-                      f"Description: {row['description']}",
                       f"Baseline: {row['baseline']}",
                       f"With corrected Gemini tests: {row['generated']}",
                       "",
                   ])
           else:
-              report.append("No mutant status changed after adding the corrected Gemini tests.")
+              report.append(
+                  "No mutant status changed after adding the corrected Gemini tests."
+              )
 
           report_text = "\n".join(report) + "\n"
           Path("maintain-power-mull-comparison.md").write_text(
@@ -411,44 +384,21 @@ jobs:
           )
           print(report_text)
 
-          if not baseline or not generated:
-              print("\n=== Candidate Mull IDE lines from baseline ===")
-              baseline_text = Path("mull-results-baseline/mull-console.log").read_text(
-                  encoding="utf-8", errors="replace"
-              )
-              for line in baseline_text.splitlines():
-                  if source_file.split("/")[-1] in line or "Mutation score" in line:
-                      print(line)
-              print("\n=== Candidate Mull IDE lines from generated run ===")
-              generated_text = Path("mull-results-generated/mull-console.log").read_text(
-                  encoding="utf-8", errors="replace"
-              )
-              for line in generated_text.splitlines():
-                  if source_file.split("/")[-1] in line or "Mutation score" in line:
-                      print(line)
+          if len(baseline) != 16 or len(generated) != 16:
               raise SystemExit(
-                  "No MaintainPower mutants were parsed from one or both Mull logs."
+                  "Expected 16 executed mutants in each run, parsed "
+                  f"baseline={len(baseline)}, generated={len(generated)}."
               )
           PY
       - name: Add result to workflow summary
         if: always()
         shell: bash
         run: |
-          if [ -f target-mutants-comparison.md ]; then
-            cat target-mutants-comparison.md >> "${GITHUB_STEP_SUMMARY}"
+          if [ -f maintain-power-mull-comparison.md ]; then
+            cat maintain-power-mull-comparison.md >> "${GITHUB_STEP_SUMMARY}"
           else
             echo "Mull comparison was not generated." >> "${GITHUB_STEP_SUMMARY}"
           fi
-
-          echo >> "${GITHUB_STEP_SUMMARY}"
-          echo "## Tests covering target lines" >> "${GITHUB_STEP_SUMMARY}"
-          echo >> "${GITHUB_STEP_SUMMARY}"
-          echo '```text' >> "${GITHUB_STEP_SUMMARY}"
-          cat tests-covering-target-lines.txt 2>/dev/null \
-            >> "${GITHUB_STEP_SUMMARY}" \
-            || echo "Coverage report was not generated." \
-            >> "${GITHUB_STEP_SUMMARY}"
-          echo '```' >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Upload comparison artifacts
         if: always()
