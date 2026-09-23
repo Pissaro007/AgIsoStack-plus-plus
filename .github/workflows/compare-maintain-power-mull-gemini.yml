@@ -1,5 +1,7 @@
 name: Compare Mull on MaintainPower baseline and Gemini tests
 
+#ci: retrigger MaintainPower Mull comparison
+
 on:
   push:
     branches:
