@@ -151,8 +151,8 @@ namespace isobus
 		TestableMaintainPowerInterface interface(internalCF1);
 		interface.initialize();
 
-		interface.my_maintain_power_data.set_maintain_ecu_power(MaintainPowerInterface::MaintainPowerData::MaintainECUPower::RequirementFor2SecondsMoreForECU_PWR);
-		interface.my_maintain_power_data.set_maintain_actuator_power(MaintainPowerInterface::MaintainPowerData::MaintainActuatorPower::RequirementFor2SecondsMoreForPWR);
+		interface.maintainPowerTransmitData.set_maintain_ecu_power(MaintainPowerInterface::MaintainPowerData::MaintainECUPower::RequirementFor2SecondsMoreForECU_PWR);
+		interface.maintainPowerTransmitData.set_maintain_actuator_power(MaintainPowerInterface::MaintainPowerData::MaintainActuatorPower::RequirementFor2SecondsMoreForPWR);
 
 		EXPECT_TRUE(interface.send_maintain_power());
 	}
