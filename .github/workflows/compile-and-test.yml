@@ -6,6 +6,7 @@ name: Compile and test AgIsoStack++
 #ci: rerun build after third Gemini correction
 #ci: rerun build after manual Gemini test fix
 #ci: rerun tests after manual Gemini oracle fixes
+#ci: trigger Gemini MaintainPower test workflow
 
 on:
   push:
