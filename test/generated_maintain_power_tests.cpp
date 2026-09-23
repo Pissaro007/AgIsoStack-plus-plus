@@ -113,7 +113,7 @@ namespace isobus
 	{
 		MaintainPowerInterface interface(internalCF1);
 
-		EXPECT_EQ(interface.get_maintain_power_time(), 2000U); // Valeur par défaut : 2000 ms
+		EXPECT_EQ(interface.get_maintain_power_time(), 0U); // Valeur par défaut : 0 ms
 
 		interface.set_maintain_power_time(5000U);
 		EXPECT_EQ(interface.get_maintain_power_time(), 5000U);
