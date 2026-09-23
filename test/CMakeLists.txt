@@ -55,6 +55,7 @@ set(TEST_SRC
     guidance_tests.cpp
     speed_distance_message_tests.cpp
     maintain_power_tests.cpp
+    generated_maintain_power_tests.cpp
     vt_object_tests.cpp
     nmea2000_message_tests.cpp
     isobus_data_dictionary_tests.cpp
