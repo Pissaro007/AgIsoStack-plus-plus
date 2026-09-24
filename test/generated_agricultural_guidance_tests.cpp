@@ -288,7 +288,7 @@ namespace
 		bool callbackChanged = false;
 
 		interfaceUnderTest.get_guidance_system_command_event_publisher().add_listener(
-		  const std::shared_ptr<Command> &command, const bool &changed {
+		  [&](const std::shared_ptr<Command> &command, const bool &changed) {
 			  ++callbackCount;
 			  callbackObject = command;
 			  callbackChanged = changed;
@@ -335,7 +335,7 @@ namespace
 		std::vector<bool> changedValues;
 
 		interfaceUnderTest.get_guidance_system_command_event_publisher().add_listener(
-		  const std::shared_ptr<Command> &command, const bool &changed {
+		  [&](const std::shared_ptr<Command> &command, const bool &changed) {
 			  callbackObjects.push_back(command);
 			  changedValues.push_back(changed);
 		  });
@@ -386,7 +386,7 @@ namespace
 		std::vector<std::shared_ptr<Command>> callbackObjects;
 
 		interfaceUnderTest.get_guidance_system_command_event_publisher().add_listener(
-		  const std::shared_ptr<Command> &command, const bool &changed {
+		  [&](const std::shared_ptr<Command> &command, const bool &changed) {
 			  callbackObjects.push_back(command);
 			  changedValues.push_back(changed);
 		  });
@@ -445,7 +445,7 @@ namespace
 		std::vector<bool> changedValues;
 
 		interfaceUnderTest.get_guidance_system_command_event_publisher().add_listener(
-		  const std::shared_ptr<Command> &command, const bool &changed {
+		  [&](const std::shared_ptr<Command> &command, const bool &changed) {
 			  ++callbackCount;
 			  callbackObjects.push_back(command);
 			  changedValues.push_back(changed);
@@ -512,8 +512,8 @@ namespace
 		std::size_t callbackCount = 0;
 
 		interfaceUnderTest.get_guidance_system_command_event_publisher().add_listener(
-		  const std::shared_ptr<AgriculturalGuidanceInterface::GuidanceSystemCommand> &,
-		      const bool & {
+		  [&](const std::shared_ptr<AgriculturalGuidanceInterface::GuidanceSystemCommand> &,
+		      const bool &) {
 			  ++callbackCount;
 		  });
 
@@ -564,7 +564,7 @@ namespace
 		bool callbackChanged = false;
 
 		interfaceUnderTest.get_guidance_machine_info_event_publisher().add_listener(
-		  const std::shared_ptr<Info> &info, const bool &changed {
+		  [&](const std::shared_ptr<Info> &info, const bool &changed) {
 			  ++callbackCount;
 			  callbackObject = info;
 			  callbackChanged = changed;
@@ -662,7 +662,7 @@ namespace
 		std::vector<bool> changedValues;
 
 		interfaceUnderTest.get_guidance_machine_info_event_publisher().add_listener(
-		  const std::shared_ptr<Info> &info, const bool &changed {
+		  [&](const std::shared_ptr<Info> &info, const bool &changed) {
 			  callbackObjects.push_back(info);
 			  changedValues.push_back(changed);
 		  });
@@ -726,7 +726,7 @@ namespace
 		std::vector<bool> changedValues;
 
 		interfaceUnderTest.get_guidance_machine_info_event_publisher().add_listener(
-		  const std::shared_ptr<Info> &info, const bool &changed {
+		  [&](const std::shared_ptr<Info> &info, const bool &changed) {
 			  callbackObjects.push_back(info);
 			  changedValues.push_back(changed);
 		  });
@@ -793,7 +793,7 @@ namespace
 		std::vector<bool> changedValues;
 
 		interfaceUnderTest.get_guidance_machine_info_event_publisher().add_listener(
-		  const std::shared_ptr<Info> &, const bool &changed {
+		  [&](const std::shared_ptr<Info> &, const bool &changed) {
 			  changedValues.push_back(changed);
 		  });
 
@@ -862,7 +862,7 @@ namespace
 		std::vector<bool> changedValues;
 
 		interfaceUnderTest.get_guidance_machine_info_event_publisher().add_listener(
-		  const std::shared_ptr<Info> &info, const bool &changed {
+		  [&](const std::shared_ptr<Info> &info, const bool &changed) {
 			  callbackObjects.push_back(info);
 			  changedValues.push_back(changed);
 		  });
@@ -954,8 +954,8 @@ namespace
 		std::size_t callbackCount = 0;
 
 		interfaceUnderTest.get_guidance_machine_info_event_publisher().add_listener(
-		  const std::shared_ptr<AgriculturalGuidanceInterface::GuidanceMachineInfo> &,
-		      const bool & {
+		  [&](const std::shared_ptr<AgriculturalGuidanceInterface::GuidanceMachineInfo> &,
+		      const bool &) {
 			  ++callbackCount;
 		  });
 
@@ -1004,14 +1004,14 @@ namespace
 		std::size_t systemCommandCallbackCount = 0;
 
 		interfaceUnderTest.get_guidance_machine_info_event_publisher().add_listener(
-		  const std::shared_ptr<AgriculturalGuidanceInterface::GuidanceMachineInfo> &,
-		      const bool & {
+		  [&](const std::shared_ptr<AgriculturalGuidanceInterface::GuidanceMachineInfo> &,
+		      const bool &) {
 			  ++machineInfoCallbackCount;
 		  });
 
 		interfaceUnderTest.get_guidance_system_command_event_publisher().add_listener(
-		  const std::shared_ptr<AgriculturalGuidanceInterface::GuidanceSystemCommand> &,
-		      const bool & {
+		  [&](const std::shared_ptr<AgriculturalGuidanceInterface::GuidanceSystemCommand> &,
+		      const bool &) {
 			  ++systemCommandCallbackCount;
 		  });
 
