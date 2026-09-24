@@ -1,14 +1,6 @@
 name: Run corrected Gemini agricultural guidance tests
 
-#ci: rerun Gemini guidance tests after correction 2
-#ci: rerun Gemini guidance tests after correction 2b
-#ci : re-run human correction
-#ci: rerun Gemini guidance tests after human correction 2
-#ci: rerun Gemini guidance tests with ICF readiness diagnostic
-#ci: rerun Gemini guidance tests after removing ICF diagnostic
-#ci: rerun Gemini guidance tests with virtual CAN setup
-#ci: rerun Gemini guidance tests after transmit queue fix
-#ci: rerun Gemini guidance clamp test after minimal cleanup
+#ci: run Gemini guidance test after successfull compilation
 
 on:
   workflow_dispatch:
