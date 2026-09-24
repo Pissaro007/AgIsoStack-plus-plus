@@ -8,6 +8,7 @@ name: Run corrected Gemini agricultural guidance tests
 #ci: rerun Gemini guidance tests after removing ICF diagnostic
 #ci: rerun Gemini guidance tests with virtual CAN setup
 #ci: rerun Gemini guidance tests after transmit queue fix
+#ci: rerun Gemini guidance clamp test after minimal cleanup
 
 on:
   workflow_dispatch:
