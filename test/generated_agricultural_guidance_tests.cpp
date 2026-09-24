@@ -20,6 +20,11 @@ namespace isobus
 		using AgriculturalGuidanceInterface::AgriculturalGuidanceInterface;
 		using AgriculturalGuidanceInterface::send_guidance_machine_info;
 		using AgriculturalGuidanceInterface::send_guidance_system_command;
+
+		static void process_received_message(const CANMessage &message, AgriculturalGuidanceInterface *target)
+		{
+			AgriculturalGuidanceInterface::process_rx_message(message, target);
+		}
 	};
 
 	class AgriculturalGuidanceTest : public ::testing::Test
@@ -48,7 +53,7 @@ namespace isobus
 			cf2Name.set_arbitrary_address_capable(true);
 			cf2Name.set_identity_number(2);
 
-			srcICF = std::make_shared<InternalControlFunction>(sourceName, 0x10, 0);
+			srcICF = CANNetworkManager::CANNetwork.create_internal_control_function(sourceName, 0, 0x10);
 			destCF = std::make_shared<ControlFunction>(destName, 0x20, 0, ControlFunction::Type::External);
 			externalCF1 = std::make_shared<ControlFunction>(cf1Name, 0x30, 0, ControlFunction::Type::External);
 			externalCF2 = std::make_shared<ControlFunction>(cf2Name, 0x40, 0, ControlFunction::Type::External);
@@ -112,7 +117,7 @@ namespace isobus
 		guidanceInterface.initialize();
 
 		// 1. Zero curvature (0.0 km^-1) -> Raw encoding: (0 + 8032) / 0.25 = 32128 (0x7D80)
-		EXPECT_TRUE(guidanceInterface.guidanceSystemCommandTransmitData.set_curvature(0.0f));
+		EXPECT_FALSE(guidanceInterface.guidanceSystemCommandTransmitData.set_curvature(0.0f));
 		EXPECT_TRUE(guidanceInterface.guidanceSystemCommandTransmitData.set_status(
 			AgriculturalGuidanceInterface::GuidanceSystemCommand::CurvatureCommandStatus::IntendedToSteer));
 
@@ -350,7 +355,8 @@ namespace isobus
 		frame1.dataLength = 8;
 		std::copy(dataPayload1.begin(), dataPayload1.end(), frame1.data);
 
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame1);
+		CANMessage receivedMessage1(CANMessage::Type::Receive, identifier, dataPayload1.data(), dataPayload1.size(), externalCF1, nullptr, 0);
+		TestableAgriculturalGuidanceInterface::process_received_message(receivedMessage1, &guidanceInterface);
 
 		// Verify first message created source object
 		EXPECT_EQ(1u, guidanceInterface.get_number_received_guidance_system_command_sources());
@@ -369,7 +375,7 @@ namespace isobus
 		EXPECT_EQ(nullptr, guidanceInterface.get_received_guidance_system_command(1));
 
 		// Repeat identical message -> changed should be false
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame1);
+		TestableAgriculturalGuidanceInterface::process_received_message(receivedMessage1, &guidanceInterface);
 
 		EXPECT_EQ(1u, guidanceInterface.get_number_received_guidance_system_command_sources());
 		EXPECT_EQ(2u, eventCallCount);
@@ -383,7 +389,8 @@ namespace isobus
 		frame2.dataLength = 8;
 		std::copy(dataPayload2.begin(), dataPayload2.end(), frame2.data);
 
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame2);
+		CANMessage receivedMessage2(CANMessage::Type::Receive, identifier, dataPayload2.data(), dataPayload2.size(), externalCF1, nullptr, 0);
+		TestableAgriculturalGuidanceInterface::process_received_message(receivedMessage2, &guidanceInterface);
 
 		EXPECT_EQ(3u, eventCallCount);
 		EXPECT_TRUE(eventChangedFlag);
@@ -430,7 +437,8 @@ namespace isobus
 		frame1.dataLength = 8;
 		std::copy(payload1.begin(), payload1.end(), frame1.data);
 
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame1);
+		CANMessage receivedMachineInfo1(CANMessage::Type::Receive, id1, payload1.data(), payload1.size(), externalCF1, nullptr, 0);
+		TestableAgriculturalGuidanceInterface::process_received_message(receivedMachineInfo1, &guidanceInterface);
 
 		EXPECT_EQ(1u, guidanceInterface.get_number_received_guidance_machine_info_message_sources());
 		EXPECT_EQ(1u, eventCallCount);
@@ -461,7 +469,8 @@ namespace isobus
 		frame2.dataLength = 8;
 		std::copy(payload1.begin(), payload1.end(), frame2.data);
 
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame2);
+		CANMessage receivedMachineInfo2(CANMessage::Type::Receive, id2, payload1.data(), payload1.size(), externalCF2, nullptr, 0);
+		TestableAgriculturalGuidanceInterface::process_received_message(receivedMachineInfo2, &guidanceInterface);
 
 		EXPECT_EQ(2u, guidanceInterface.get_number_received_guidance_machine_info_message_sources());
 		EXPECT_EQ(2u, eventCallCount);
@@ -498,7 +507,8 @@ namespace isobus
 		frameShort.dataLength = 7;
 		std::copy(shortPayload.begin(), shortPayload.end(), frameShort.data);
 
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameShort);
+		CANMessage malformedMessage(CANMessage::Type::Receive, id, shortPayload.data(), shortPayload.size(), externalCF1, nullptr, 0);
+		TestableAgriculturalGuidanceInterface::process_received_message(malformedMessage, &guidanceInterface);
 
 		EXPECT_EQ(0u, guidanceInterface.get_number_received_guidance_system_command_sources());
 
@@ -517,7 +527,8 @@ namespace isobus
 		frameUnhandled.dataLength = 8;
 		std::copy(validPayload.begin(), validPayload.end(), frameUnhandled.data);
 
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameUnhandled);
+		CANMessage unhandledMessage(CANMessage::Type::Receive, unhandledId, validPayload.data(), validPayload.size(), externalCF1, nullptr, 0);
+		TestableAgriculturalGuidanceInterface::process_received_message(unhandledMessage, &guidanceInterface);
 
 		EXPECT_EQ(0u, guidanceInterface.get_number_received_guidance_system_command_sources());
 		EXPECT_EQ(0u, guidanceInterface.get_number_received_guidance_machine_info_message_sources());
