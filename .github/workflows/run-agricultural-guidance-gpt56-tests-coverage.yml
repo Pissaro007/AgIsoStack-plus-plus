@@ -1,5 +1,7 @@
 name: Run GPT-5.6 guidance tests and measure combined coverage
 
+#ci: rerun GPT-5.6 guidance tests after correction 2
+
 on:
   workflow_dispatch:
 
