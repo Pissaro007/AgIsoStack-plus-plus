@@ -22,8 +22,8 @@ namespace isobus
 	{
 	public:
 		using AgriculturalGuidanceInterface::AgriculturalGuidanceInterface;
-		bool send_guidance_machine_info() const { const bool r = AgriculturalGuidanceInterface::send_guidance_machine_info(); CANHardwareInterface::update(); CANHardwareInterface::update(); return r; }
-		bool send_guidance_system_command() const { const bool r = AgriculturalGuidanceInterface::send_guidance_system_command(); CANHardwareInterface::update(); CANHardwareInterface::update(); return r; }
+		bool send_guidance_machine_info() const { const bool r = AgriculturalGuidanceInterface::send_guidance_machine_info(); CANHardwareInterface::update(); CANNetworkManager::CANNetwork.update(); return r; }
+		bool send_guidance_system_command() const { const bool r = AgriculturalGuidanceInterface::send_guidance_system_command(); CANHardwareInterface::update(); CANNetworkManager::CANNetwork.update(); return r; }
 		static void process_received_message(const CANMessage &message, AgriculturalGuidanceInterface *target) { AgriculturalGuidanceInterface::process_rx_message(message, target); }
 	};
 
