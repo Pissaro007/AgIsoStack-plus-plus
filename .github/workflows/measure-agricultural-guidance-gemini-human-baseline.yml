@@ -1,0 +1,326 @@
+name: Measure AgriculturalGuidanceInterface Gemini human baseline
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/agricultural-guidance-plus-gemini
+    paths:
+      - .github/workflows/measure-agricultural-guidance-gemini-human-baseline.yml
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      BUILD_DIR: ${{ github.workspace }}/build-agricultural-guidance-gemini-human-baseline
+      EVIDENCE_DIR: ${{ github.workspace }}/agricultural-guidance-gemini-human-baseline-evidence
+      ARTIFACT_NAME: agricultural-guidance-gemini-human-baseline-evidence
+      CONFIGURATION_LABEL: human tests only
+      TARGET_SOURCE: isobus/src/isobus_guidance_interface.cpp
+      GENERATED_TEST: test/generated_agricultural_guidance_tests.cpp
+      GENERATED_CTEST_REGEX: '^AgriculturalGuidanceInterfaceTest\.'
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Create evidence directory
+        shell: bash
+        run: mkdir -p "${EVIDENCE_DIR}"
+
+      - name: Record experiment identity
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Target source: ${TARGET_SOURCE}"
+            echo "Generated test: ${GENERATED_TEST}"
+            echo "Generated fixture regex: ${GENERATED_CTEST_REGEX}"
+            echo "Configuration: ${CONFIGURATION_LABEL}"
+            echo "Recorded at: $(date --iso-8601=seconds)"
+            echo
+            cat /etc/os-release
+          } 2>&1 | tee "${EVIDENCE_DIR}/experiment-identity.txt"
+
+      - name: Verify experiment inputs
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            for required_file in               "${GENERATED_TEST}"               "${TARGET_SOURCE}"               test/guidance_tests.cpp               test/CMakeLists.txt; do
+              if [[ ! -f "${required_file}" ]]; then
+                echo "ERROR: required file not found: ${required_file}"
+                exit 1
+              fi
+            done
+
+            if ! grep -Eq '^[[:space:]]*generated_agricultural_guidance_tests\.cpp[[:space:]]*$' test/CMakeLists.txt; then
+              echo "ERROR: generated test is not integrated in test/CMakeLists.txt."
+              exit 1
+            fi
+
+            if [[ -e "${BUILD_DIR}" ]]; then
+              echo "ERROR: dedicated build directory already exists: ${BUILD_DIR}"
+              exit 1
+            fi
+
+            git status --short --untracked-files=all
+          } 2>&1 | tee "${EVIDENCE_DIR}/input-validation.txt"
+
+      - name: Preserve input hashes
+        shell: bash
+        run: |
+          sha256sum             "${GENERATED_TEST}"             "${TARGET_SOURCE}"             test/guidance_tests.cpp             test/CMakeLists.txt             > "${EVIDENCE_DIR}/input-sha256-before.txt"
+
+      - name: Install build and coverage dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake gcovr ninja-build
+          {
+            cmake --version
+            c++ --version
+            gcov --version
+            gcovr --version
+            ninja --version
+          } 2>&1 | tee "${EVIDENCE_DIR}/toolchain-versions.txt"
+
+      - name: Configure coverage build
+        id: configure
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          cmake             -S "${GITHUB_WORKSPACE}"             -B "${BUILD_DIR}"             -G Ninja             -DBUILD_TESTING=ON             -DCMAKE_BUILD_TYPE=Debug             -DCMAKE_C_FLAGS="--coverage -O0 -g"             -DCMAKE_CXX_FLAGS="--coverage -O0 -g"             -DCMAKE_EXE_LINKER_FLAGS="--coverage"             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON             2>&1 | tee "${EVIDENCE_DIR}/cmake-configure-raw.txt"
+          status=${PIPESTATUS[0]}
+          echo "${status}" > "${EVIDENCE_DIR}/cmake-configure-exit-status.txt"
+          exit "${status}"
+
+      - name: Build unit tests
+        id: build
+        if: steps.configure.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          cmake --build "${BUILD_DIR}"             --target unit_tests             --parallel 2             --verbose             2>&1 | tee "${EVIDENCE_DIR}/build-raw.txt"
+          status=${PIPESTATUS[0]}
+          echo "${status}" > "${EVIDENCE_DIR}/build-exit-status.txt"
+          exit "${status}"
+
+      - name: Inventory CTest tests
+        id: inventory
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+          ctest --test-dir "${BUILD_DIR}" --show-only=human             2>&1 | tee "${EVIDENCE_DIR}/all-ctest-tests.txt"
+          ctest --test-dir "${BUILD_DIR}" --show-only=human -R "${GENERATED_CTEST_REGEX}"             2>&1 | tee "${EVIDENCE_DIR}/generated-ctest-tests.txt"
+
+          all_count="$(grep -c '^  Test #' "${EVIDENCE_DIR}/all-ctest-tests.txt" || true)"
+          generated_count="$(grep -c '^  Test #' "${EVIDENCE_DIR}/generated-ctest-tests.txt" || true)"
+          human_count=$((all_count - generated_count))
+
+          {
+            echo "All discovered CTest tests: ${all_count}"
+            echo "Generated Gemini tests: ${generated_count}"
+            echo "Human tests: ${human_count}"
+          } | tee "${EVIDENCE_DIR}/test-counts-before-run.txt"
+
+          if [[ "${generated_count}" -ne 11 ]]; then
+            echo "ERROR: expected exactly 11 AgriculturalGuidanceInterfaceTest tests, found ${generated_count}."
+            exit 1
+          fi
+          if [[ "${human_count}" -le 0 ]]; then
+            echo "ERROR: no human tests were discovered."
+            exit 1
+          fi
+
+      - name: Reset coverage counters
+        if: steps.inventory.outcome == 'success'
+        shell: bash
+        run: find "${BUILD_DIR}" -type f -name '*.gcda' -delete
+
+      - name: Run human-only baseline
+        id: tests
+        if: steps.inventory.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          timeout --signal=TERM --kill-after=30s 15m             ctest               --test-dir "${BUILD_DIR}"               --output-on-failure               --no-tests=error               -E "${GENERATED_CTEST_REGEX}"               -j 2             2>&1 | tee "${EVIDENCE_DIR}/ctest-raw.txt"
+          status=${PIPESTATUS[0]}
+          echo "${status}" > "${EVIDENCE_DIR}/ctest-exit-status.txt"
+          exit "${status}"
+
+      - name: Verify generated Gemini tests were excluded
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          log="${EVIDENCE_DIR}/ctest-raw.txt"
+          check="${EVIDENCE_DIR}/execution-scope-check.txt"
+          if [[ ! -f "${log}" ]]; then
+            echo "CTest log unavailable." > "${check}"
+            exit 0
+          fi
+          if grep -q 'AgriculturalGuidanceInterfaceTest\.' "${log}"; then
+            echo "ERROR: at least one generated Gemini test was executed in the human baseline." | tee "${check}"
+            grep 'AgriculturalGuidanceInterfaceTest\.' "${log}" >> "${check}"
+            exit 1
+          fi
+          echo "The 11 AgriculturalGuidanceInterfaceTest tests were excluded from execution." > "${check}"
+
+      - name: Extract failed tests
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          grep -nE '[0-9]+ - .*\(Failed\)|The following tests FAILED|SEGFAULT|Timeout'             "${EVIDENCE_DIR}/ctest-raw.txt"             > "${EVIDENCE_DIR}/failed-tests.txt" 2>/dev/null || true
+
+      - name: Measure targeted coverage
+        id: coverage
+        if: steps.tests.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          gcovr             --root "${GITHUB_WORKSPACE}"             --filter "${GITHUB_WORKSPACE}/${TARGET_SOURCE}"             --gcov-ignore-errors=no_working_dir_found             --print-summary             --txt "${EVIDENCE_DIR}/coverage.txt"             --json "${EVIDENCE_DIR}/coverage.json"             --xml "${EVIDENCE_DIR}/coverage.xml"             --xml-pretty             "${BUILD_DIR}"             2>&1 | tee "${EVIDENCE_DIR}/coverage-command-raw.txt"
+          status=${PIPESTATUS[0]}
+          echo "${status}" > "${EVIDENCE_DIR}/coverage-exit-status.txt"
+          exit "${status}"
+
+      - name: Create exact coverage summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          json_file="${EVIDENCE_DIR}/coverage.json"
+          summary_file="${EVIDENCE_DIR}/coverage-summary.txt"
+          line_details="${EVIDENCE_DIR}/line-details.tsv"
+          branch_details="${EVIDENCE_DIR}/branch-details.tsv"
+
+          if [[ ! -f "${json_file}" ]]; then
+            echo "Coverage unavailable because tests or coverage generation failed." > "${summary_file}"
+            exit 0
+          fi
+
+          python3 - "${json_file}" "${summary_file}" "${line_details}" "${branch_details}" "${CONFIGURATION_LABEL}" <<'PY'
+import json
+import sys
+
+json_path, summary_path, line_path, branch_path, label = sys.argv[1:6]
+with open(json_path, encoding="utf-8") as source:
+    report = json.load(source)
+
+files = report.get("files", [])
+if len(files) != 1:
+    raise SystemExit(f"Expected exactly one filtered source file, found {len(files)}")
+
+source_file = files[0]
+lines = source_file.get("lines", [])
+line_total = len(lines)
+line_covered = sum(1 for line in lines if line.get("count", 0) > 0)
+
+branches = []
+for line in lines:
+    line_number = line.get("line_number")
+    for branch_index, branch in enumerate(line.get("branches", [])):
+        branches.append((line_number, branch_index, branch))
+
+branch_total = len(branches)
+branch_covered = sum(1 for _, _, branch in branches if branch.get("count", 0) > 0)
+line_percent = 100.0 * line_covered / line_total if line_total else 0.0
+branch_percent = 100.0 * branch_covered / branch_total if branch_total else 0.0
+
+with open(summary_path, "w", encoding="utf-8") as target:
+    target.write("Target: isobus/src/isobus_guidance_interface.cpp
+")
+    target.write(f"Configuration: {label}
+")
+    target.write(f"Lines: {line_covered}/{line_total} ({line_percent:.2f}%)
+")
+    target.write(f"Branches: {branch_covered}/{branch_total} ({branch_percent:.2f}%)
+")
+
+with open(line_path, "w", encoding="utf-8") as target:
+    target.write("line	count	covered
+")
+    for line in lines:
+        count = line.get("count", 0)
+        target.write(f"{line.get('line_number')}	{count}	{str(count > 0).lower()}
+")
+
+with open(branch_path, "w", encoding="utf-8") as target:
+    target.write("line	branch_index	blockno	count	covered	fallthrough	throw
+")
+    for line_number, branch_index, branch in branches:
+        count = branch.get("count", 0)
+        target.write(
+            f"{line_number}	{branch_index}	{branch.get('blockno', '')}	{count}	"
+            f"{str(count > 0).lower()}	{str(branch.get('fallthrough', False)).lower()}	"
+            f"{str(branch.get('throw', False)).lower()}
+"
+        )
+PY
+
+      - name: Verify repository integrity
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          sha256sum             "${GENERATED_TEST}"             "${TARGET_SOURCE}"             test/guidance_tests.cpp             test/CMakeLists.txt             > "${EVIDENCE_DIR}/input-sha256-after.txt"
+
+          if cmp -s "${EVIDENCE_DIR}/input-sha256-before.txt" "${EVIDENCE_DIR}/input-sha256-after.txt"; then
+            echo "Experimental inputs are unchanged." > "${EVIDENCE_DIR}/repository-integrity.txt"
+          else
+            echo "WARNING: at least one experimental input changed." > "${EVIDENCE_DIR}/repository-integrity-warning.txt"
+          fi
+          git status --short --untracked-files=all > "${EVIDENCE_DIR}/git-status-after.txt"
+
+      - name: Summarize result
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          value_or_unavailable() {
+            if [[ -f "$1" ]]; then cat "$1"; else echo unavailable; fi
+          }
+          {
+            echo "AgriculturalGuidanceInterface coverage summary"
+            echo
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Configuration: ${CONFIGURATION_LABEL}"
+            echo "Build exit status: $(value_or_unavailable "${EVIDENCE_DIR}/build-exit-status.txt")"
+            echo "CTest exit status: $(value_or_unavailable "${EVIDENCE_DIR}/ctest-exit-status.txt")"
+            echo "Coverage exit status: $(value_or_unavailable "${EVIDENCE_DIR}/coverage-exit-status.txt")"
+            echo
+            cat "${EVIDENCE_DIR}/test-counts-before-run.txt" 2>/dev/null || true
+            echo
+            cat "${EVIDENCE_DIR}/execution-scope-check.txt" 2>/dev/null || true
+            echo
+            cat "${EVIDENCE_DIR}/coverage-summary.txt" 2>/dev/null || true
+          } | tee "${EVIDENCE_DIR}/final-summary.txt"
+
+      - name: Upload coverage evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: ${{ env.EVIDENCE_DIR }}
+          if-no-files-found: error
+          retention-days: 30
