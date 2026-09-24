@@ -44,7 +44,7 @@ namespace isobus
 			NAME nameRx = nameSender;
 			nameRx.set_identity_number(3);
 
-			internalSender = CANNetworkManager::CANNetwork.create_internal_control_function(nameSender, 0x10, 0);
+			internalSender = CANNetworkManager::CANNetwork.create_internal_control_function(nameSender, 0, 0);
 			externalDest = std::make_shared<ControlFunction>(nameDest, 0x20, 0);
 			externalRxSource = std::make_shared<ControlFunction>(nameRx, 0x30, 0);
 		}
