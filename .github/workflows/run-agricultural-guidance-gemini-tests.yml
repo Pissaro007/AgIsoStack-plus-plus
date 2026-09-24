@@ -3,8 +3,15 @@ name: Run AgriculturalGuidanceInterface Gemini tests
 on:
   workflow_dispatch:
 
+  push:
+    branches:
+      - research/agricultural-guidance-plus-gemini
+    paths:
+      - ".github/workflows/run-agricultural-guidance-gemini-tests.yml"
+
 permissions:
   contents: read
+
 
 jobs:
   run-generated-tests:
