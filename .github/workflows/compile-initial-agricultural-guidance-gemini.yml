@@ -1,6 +1,7 @@
 name: Compile initial Gemini agricultural guidance tests
 
 #ci: rerun Gemini guidance build after correction 1
+# rerun
 
 on:
   workflow_dispatch:
