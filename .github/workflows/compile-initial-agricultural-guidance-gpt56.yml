@@ -1,0 +1,343 @@
+name: Compile initial GPT-5.6 agricultural guidance tests
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/agricultural-guidance-plus-gpt56
+    paths:
+      - ".github/workflows/compile-initial-agricultural-guidance-gpt56.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compile-initial-generated-tests:
+    name: Compile unmodified GPT-5.6 guidance tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      BUILD_DIR: "${{ github.workspace }}/build-initial-agricultural-guidance-gpt56"
+      EVIDENCE_DIR: "${{ github.workspace }}/agricultural-guidance-gpt56-initial-build-evidence"
+      GENERATED_TEST: "test/generated_agricultural_guidance_tests.cpp"
+      TARGET_SOURCE: "isobus/src/isobus_guidance_interface.cpp"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Create evidence directory
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${EVIDENCE_DIR}"
+
+      - name: Record experiment identity
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Generated test: ${GENERATED_TEST}"
+            echo "Target source: ${TARGET_SOURCE}"
+            echo "Runner OS: ${RUNNER_OS}"
+            echo "Recorded at: $(date --iso-8601=seconds)"
+            echo
+            cat /etc/os-release
+          } 2>&1 | tee "${EVIDENCE_DIR}/experiment-identity.txt"
+
+      - name: Verify unmodified experimental inputs
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            if [ ! -f "${GENERATED_TEST}" ]; then
+              echo "ERROR: generated test file was not found: ${GENERATED_TEST}"
+              exit 1
+            fi
+
+            if [ ! -f "${TARGET_SOURCE}" ]; then
+              echo "ERROR: target production source was not found: ${TARGET_SOURCE}"
+              exit 1
+            fi
+
+            if [ ! -f "test/CMakeLists.txt" ]; then
+              echo "ERROR: test/CMakeLists.txt was not found."
+              exit 1
+            fi
+
+            if ! grep -Fxq "    generated_agricultural_guidance_tests.cpp" test/CMakeLists.txt; then
+              echo "ERROR: generated_agricultural_guidance_tests.cpp is not integrated in TEST_SRC."
+              exit 1
+            fi
+
+            if [ -e "${BUILD_DIR}" ]; then
+              echo "ERROR: the dedicated build directory already exists."
+              exit 1
+            fi
+
+            echo "Generated test file found."
+            echo "Target production source found."
+            echo "Generated test is integrated in test/CMakeLists.txt."
+            echo "Dedicated build directory is absent."
+            echo
+
+            echo "Tracked working-tree changes before build:"
+            git status --short --untracked-files=all
+          } 2>&1 | tee "${EVIDENCE_DIR}/input-validation.txt"
+
+      - name: Preserve initial generated test and hashes
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cp "${GENERATED_TEST}" \
+            "${EVIDENCE_DIR}/generated_agricultural_guidance_tests-initial.cpp.txt"
+
+          sha256sum \
+            "${GENERATED_TEST}" \
+            "${TARGET_SOURCE}" \
+            "test/CMakeLists.txt" \
+            > "${EVIDENCE_DIR}/input-sha256.txt"
+
+          git diff -- "${GENERATED_TEST}" "${TARGET_SOURCE}" "test/CMakeLists.txt" \
+            > "${EVIDENCE_DIR}/tracked-input-diff-before-build.patch"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build
+
+          {
+            echo "CMake:"
+            cmake --version
+            echo
+            echo "C++ compiler:"
+            c++ --version
+            echo
+            echo "Ninja:"
+            ninja --version
+          } 2>&1 | tee "${EVIDENCE_DIR}/toolchain-versions.txt"
+
+      - name: Configure initial build
+        id: configure
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+
+          cmake \
+            -S "${GITHUB_WORKSPACE}" \
+            -B "${BUILD_DIR}" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            2>&1 | tee "${EVIDENCE_DIR}/cmake-configure-raw.txt"
+
+          CONFIGURE_STATUS=${PIPESTATUS[0]}
+          echo "${CONFIGURE_STATUS}" \
+            | tee "${EVIDENCE_DIR}/cmake-configure-exit-status.txt"
+
+          exit "${CONFIGURE_STATUS}"
+
+      - name: Compile initial generated tests
+        id: compile
+        if: steps.configure.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+
+          cmake \
+            --build "${BUILD_DIR}" \
+            --target unit_tests \
+            --parallel 2 \
+            --verbose \
+            2>&1 | tee "${EVIDENCE_DIR}/initial-build-raw.txt"
+
+          BUILD_STATUS=${PIPESTATUS[0]}
+          echo "${BUILD_STATUS}" \
+            | tee "${EVIDENCE_DIR}/initial-build-exit-status.txt"
+
+          exit "${BUILD_STATUS}"
+
+      - name: Extract initial compiler diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          BUILD_LOG="${EVIDENCE_DIR}/initial-build-raw.txt"
+          DIAGNOSTICS="${EVIDENCE_DIR}/initial-build-diagnostics.txt"
+          GENERATED_DIAGNOSTICS="${EVIDENCE_DIR}/generated-test-diagnostics.txt"
+
+          if [ ! -f "${BUILD_LOG}" ]; then
+            echo "Build log unavailable because compilation was not started." \
+              > "${DIAGNOSTICS}"
+            cp "${DIAGNOSTICS}" "${GENERATED_DIAGNOSTICS}"
+            exit 0
+          fi
+
+          grep -nE \
+            '(^|: )(fatal error|error|warning|note):|undefined reference|ninja: build stopped|FAILED:' \
+            "${BUILD_LOG}" \
+            > "${DIAGNOSTICS}" \
+            || true
+
+          grep -n -A 4 -B 2 \
+            'generated_agricultural_guidance_tests.cpp' \
+            "${BUILD_LOG}" \
+            > "${GENERATED_DIAGNOSTICS}" \
+            || true
+
+          if [ ! -s "${DIAGNOSTICS}" ]; then
+            echo "No compiler diagnostic matched the extraction pattern." \
+              > "${DIAGNOSTICS}"
+          fi
+
+          if [ ! -s "${GENERATED_DIAGNOSTICS}" ]; then
+            echo "No diagnostic referencing generated_agricultural_guidance_tests.cpp was found." \
+              > "${GENERATED_DIAGNOSTICS}"
+          fi
+
+      - name: Count diagnostics without interpreting root causes
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          BUILD_LOG="${EVIDENCE_DIR}/initial-build-raw.txt"
+          COUNTS_FILE="${EVIDENCE_DIR}/initial-build-diagnostic-counts.txt"
+
+          if [ ! -f "${BUILD_LOG}" ]; then
+            {
+              echo "Compiler errors: unavailable"
+              echo "Compiler warnings: unavailable"
+              echo "Compiler notes: unavailable"
+            } > "${COUNTS_FILE}"
+            exit 0
+          fi
+
+          ERROR_COUNT="$(grep -cE '(^|: )(fatal error|error):' "${BUILD_LOG}" || true)"
+          WARNING_COUNT="$(grep -cE '(^|: )warning:' "${BUILD_LOG}" || true)"
+          NOTE_COUNT="$(grep -cE '(^|: )note:' "${BUILD_LOG}" || true)"
+
+          {
+            echo "Compiler errors: ${ERROR_COUNT}"
+            echo "Compiler warnings: ${WARNING_COUNT}"
+            echo "Compiler notes: ${NOTE_COUNT}"
+            echo
+            echo "These are raw diagnostic counts, not deduplicated root causes."
+          } > "${COUNTS_FILE}"
+
+      - name: Preserve compilation database and build inventory
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          if [ -f "${BUILD_DIR}/compile_commands.json" ]; then
+            cp "${BUILD_DIR}/compile_commands.json" \
+              "${EVIDENCE_DIR}/compile_commands.json"
+          fi
+
+          find "${BUILD_DIR}" \
+            -maxdepth 4 \
+            -type f \
+            -printf '%P\t%s\n' \
+            2>/dev/null \
+            | sort \
+            > "${EVIDENCE_DIR}/build-file-inventory.txt"
+
+      - name: Verify repository integrity after build
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          sha256sum \
+            "${GENERATED_TEST}" \
+            "${TARGET_SOURCE}" \
+            "test/CMakeLists.txt" \
+            > "${EVIDENCE_DIR}/input-sha256-after-build.txt"
+
+          if cmp -s \
+            "${EVIDENCE_DIR}/input-sha256.txt" \
+            "${EVIDENCE_DIR}/input-sha256-after-build.txt"; then
+            echo "Generated test, target source, and test/CMakeLists.txt are unchanged after build." \
+              > "${EVIDENCE_DIR}/repository-integrity.txt"
+          else
+            echo "WARNING: at least one experimental input changed during the build." \
+              > "${EVIDENCE_DIR}/repository-integrity-warning.txt"
+          fi
+
+          git status --short --untracked-files=all \
+            > "${EVIDENCE_DIR}/git-status-after-build.txt"
+
+      - name: Summarize initial compilation result
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          SUMMARY="${EVIDENCE_DIR}/initial-build-summary.txt"
+          CONFIGURE_STATUS_FILE="${EVIDENCE_DIR}/cmake-configure-exit-status.txt"
+          BUILD_STATUS_FILE="${EVIDENCE_DIR}/initial-build-exit-status.txt"
+
+          {
+            echo "GPT-5.6 AgriculturalGuidanceInterface initial compilation summary"
+            echo
+            echo "Repository commit: ${GITHUB_SHA}"
+            echo "Generated test file: ${GENERATED_TEST}"
+            echo
+
+            if [ -f "${CONFIGURE_STATUS_FILE}" ]; then
+              echo "CMake configure exit status: $(cat "${CONFIGURE_STATUS_FILE}")"
+            else
+              echo "CMake configure exit status: unavailable"
+            fi
+
+            if [ -f "${BUILD_STATUS_FILE}" ]; then
+              BUILD_STATUS="$(cat "${BUILD_STATUS_FILE}")"
+              echo "Initial build exit status: ${BUILD_STATUS}"
+
+              if [ "${BUILD_STATUS}" -eq 0 ]; then
+                echo "Initial generated test compilation: success"
+              else
+                echo "Initial generated test compilation: failure"
+              fi
+            else
+              echo "Initial build exit status: unavailable"
+              echo "Initial generated test compilation: not started"
+            fi
+
+            echo
+            cat "${EVIDENCE_DIR}/initial-build-diagnostic-counts.txt" 2>/dev/null || true
+            echo
+            echo "No generated source correction was applied by this workflow."
+          } | tee "${SUMMARY}"
+
+      - name: Upload initial compilation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agricultural-guidance-gpt56-initial-build-evidence
+          path: agricultural-guidance-gpt56-initial-build-evidence
+          if-no-files-found: error
+          retention-days: 30
