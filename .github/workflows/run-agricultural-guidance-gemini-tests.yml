@@ -1,266 +1,132 @@
-name: Run corrected Gemini agricultural guidance tests
-
-#ci: run Gemini guidance test after successfull compilation
+name: Run AgriculturalGuidanceInterface Gemini tests
 
 on:
   workflow_dispatch:
-
-  push:
-    branches:
-      - research/agricultural-guidance-plus-gemini
-    paths:
-      - ".github/workflows/run-agricultural-guidance-gemini-tests.yml"
 
 permissions:
   contents: read
 
 jobs:
-  run-corrected-gemini-tests:
-    name: Run Gemini guidance tests only
+  run-generated-tests:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
-
-    env:
-      BUILD_DIR: "${{ github.workspace }}/build-agricultural-guidance-gemini-tests"
-      EVIDENCE_DIR: "${{ github.workspace }}/agricultural-guidance-gemini-test-evidence"
-      GENERATED_TEST: "test/generated_agricultural_guidance_tests.cpp"
-      TARGET_SOURCE: "isobus/src/isobus_guidance_interface.cpp"
-      GEMINI_TEST_FILTER: "AgriculturalGuidanceTest.*"
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
-      - name: Create evidence directory
-        shell: bash
-        run: |
-          set -euxo pipefail
-          mkdir -p "${EVIDENCE_DIR}"
-
-      - name: Record experiment identity
-        shell: bash
-        run: |
-          set -o pipefail
-          {
-            echo "Repository: ${GITHUB_REPOSITORY}"
-            echo "Branch: ${GITHUB_REF_NAME}"
-            echo "Commit: ${GITHUB_SHA}"
-            echo "Generator: Gemini"
-            echo "Generated test: ${GENERATED_TEST}"
-            echo "Target source: ${TARGET_SOURCE}"
-            echo "GoogleTest filter: ${GEMINI_TEST_FILTER}"
-            echo "Recorded at: $(date --iso-8601=seconds)"
-            echo
-            cat /etc/os-release
-          } 2>&1 | tee "${EVIDENCE_DIR}/experiment-identity.txt"
-
-      - name: Verify experimental inputs
-        shell: bash
-        run: |
-          set -o pipefail
-          {
-            test -f "${GENERATED_TEST}" || { echo "ERROR: missing ${GENERATED_TEST}"; exit 1; }
-            test -f "${TARGET_SOURCE}" || { echo "ERROR: missing ${TARGET_SOURCE}"; exit 1; }
-            test -f test/CMakeLists.txt || { echo "ERROR: missing test/CMakeLists.txt"; exit 1; }
-
-            if ! grep -Fxq "    generated_agricultural_guidance_tests.cpp" test/CMakeLists.txt; then
-              echo "ERROR: generated test is not integrated in TEST_SRC."
-              exit 1
-            fi
-
-            echo "Required files are present."
-            echo "Generated test is integrated in CMake."
-            echo
-            git status --short --untracked-files=all
-          } 2>&1 | tee "${EVIDENCE_DIR}/input-validation.txt"
-
-      - name: Preserve corrected Gemini test and hashes
-        shell: bash
-        run: |
-          set -euxo pipefail
-          cp "${GENERATED_TEST}" \
-            "${EVIDENCE_DIR}/generated_agricultural_guidance_tests-gemini-correction-1.cpp.txt"
-          sha256sum \
-            "${GENERATED_TEST}" \
-            "${TARGET_SOURCE}" \
-            test/CMakeLists.txt \
-            > "${EVIDENCE_DIR}/input-sha256-before.txt"
 
       - name: Install build dependencies
-        shell: bash
         run: |
-          set -euxo pipefail
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake ninja-build
-          {
-            cmake --version
-            c++ --version
-            ninja --version
-          } 2>&1 | tee "${EVIDENCE_DIR}/toolchain-versions.txt"
+          sudo apt-get install -y cmake ninja-build build-essential
 
-      - name: Configure test build
-        id: configure
-        continue-on-error: true
-        shell: bash
+      - name: Prepare evidence directory
+        run: mkdir -p agricultural-guidance-gemini-run-evidence
+
+      - name: Configure project
         run: |
-          set +e
           set -o pipefail
-          cmake \
-            -S "${GITHUB_WORKSPACE}" \
-            -B "${BUILD_DIR}" \
+          cmake -S . \
+            -B build-agricultural-guidance-gemini-tests \
             -G Ninja \
-            -DBUILD_TESTING=ON \
             -DCMAKE_BUILD_TYPE=Debug \
-            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
-            2>&1 | tee "${EVIDENCE_DIR}/cmake-configure-raw.txt"
-          STATUS=${PIPESTATUS[0]}
-          echo "${STATUS}" > "${EVIDENCE_DIR}/cmake-configure-exit-status.txt"
-          exit "${STATUS}"
+            -DBUILD_TESTING=ON \
+            2>&1 | tee agricultural-guidance-gemini-run-evidence/configure.log
 
       - name: Build unit tests
-        id: build
-        if: steps.configure.outcome == 'success'
-        continue-on-error: true
-        shell: bash
         run: |
-          set +e
           set -o pipefail
-          cmake --build "${BUILD_DIR}" \
+          cmake --build build-agricultural-guidance-gemini-tests \
             --target unit_tests \
             --parallel 2 \
-            --verbose \
-            2>&1 | tee "${EVIDENCE_DIR}/build-raw.txt"
-          STATUS=${PIPESTATUS[0]}
-          echo "${STATUS}" > "${EVIDENCE_DIR}/build-exit-status.txt"
-          exit "${STATUS}"
+            2>&1 | tee agricultural-guidance-gemini-run-evidence/build.log
 
       - name: Locate unit test executable
-        id: locate
-        if: steps.build.outcome == 'success'
+        id: locate-tests
         shell: bash
         run: |
           set -euo pipefail
-          UNIT_TESTS="$(find "${BUILD_DIR}" -type f -name unit_tests -perm -111 -print -quit)"
-          if [ -z "${UNIT_TESTS}" ]; then
-            echo "ERROR: unit_tests executable was not found."
+
+          TEST_BINARY=""
+          for candidate in \
+            build-agricultural-guidance-gemini-tests/test/unit_tests \
+            build-agricultural-guidance-gemini-tests/unit_tests
+          do
+            if [[ -x "${candidate}" ]]; then
+              TEST_BINARY="${candidate}"
+              break
+            fi
+          done
+
+          if [[ -z "${TEST_BINARY}" ]]; then
+            TEST_BINARY="$(find build-agricultural-guidance-gemini-tests -type f -name unit_tests -perm -111 | head -n 1)"
+          fi
+
+          if [[ -z "${TEST_BINARY}" || ! -x "${TEST_BINARY}" ]]; then
+            echo "ERROR: unit_tests executable not found." | tee agricultural-guidance-gemini-run-evidence/locate-error.txt
             exit 1
           fi
-          echo "UNIT_TESTS=${UNIT_TESTS}" >> "${GITHUB_ENV}"
-          echo "${UNIT_TESTS}" | tee "${EVIDENCE_DIR}/unit-tests-executable.txt"
 
-      - name: List corrected Gemini tests
-        id: list_tests
-        if: steps.locate.outcome == 'success'
+          echo "binary=${TEST_BINARY}" >> "${GITHUB_OUTPUT}"
+          printf '%s\n' "${TEST_BINARY}" | tee agricultural-guidance-gemini-run-evidence/test-binary-path.txt
+
+      - name: List generated Gemini tests
         shell: bash
         run: |
           set -o pipefail
-          "${UNIT_TESTS}" \
+
+          TEST_BINARY="${{ steps.locate-tests.outputs.binary }}"
+
+          "${TEST_BINARY}" --gtest_list_tests --gtest_color=no \
+            2>&1 | tee agricultural-guidance-gemini-run-evidence/gtest-list-tests.txt
+
+          MATCH_COUNT="$("${TEST_BINARY}" \
             --gtest_list_tests \
-            --gtest_filter="${GEMINI_TEST_FILTER}" \
+            --gtest_filter='AgriculturalGuidanceInterfaceTest.*:AgriculturalGuidanceTest.*' \
             --gtest_color=no \
-            2>&1 | tee "${EVIDENCE_DIR}/gemini-tests-list.txt"
+            2>/dev/null \
+            | awk '/^  [^ ]/ { count++ } END { print count+0 }')"
 
-          TEST_COUNT="$(sed -n '/^AgriculturalGuidanceTest\.$/,/^[^ ]/p' "${EVIDENCE_DIR}/gemini-tests-list.txt" \
-            | grep -c '^  [^ ]' || true)"
-          echo "${TEST_COUNT}" | tee "${EVIDENCE_DIR}/gemini-test-count.txt"
+          printf '%s\n' "${MATCH_COUNT}" | tee agricultural-guidance-gemini-run-evidence/matched-test-count.txt
 
-          if [ "${TEST_COUNT}" -le 0 ]; then
-            echo "ERROR: no Gemini test matched ${GEMINI_TEST_FILTER}."
+          if [[ "${MATCH_COUNT}" -eq 0 ]]; then
+            echo "ERROR: no Gemini test matched the expected AgriculturalGuidance fixtures." \
+              | tee agricultural-guidance-gemini-run-evidence/no-matching-tests.txt
             exit 1
           fi
 
-      - name: Run corrected Gemini tests only
-        id: run_tests
-        if: steps.list_tests.outcome == 'success'
-        continue-on-error: true
+      - name: Run generated Gemini tests
         shell: bash
         run: |
-          set +e
           set -o pipefail
 
-          timeout --signal=TERM --kill-after=30s 10m \
-            "${UNIT_TESTS}" \
-            --gtest_filter="${GEMINI_TEST_FILTER}" \
+          TEST_BINARY="${{ steps.locate-tests.outputs.binary }}"
+          FILTER='AgriculturalGuidanceInterfaceTest.*:AgriculturalGuidanceTest.*'
+
+          set +e
+          "${TEST_BINARY}" \
+            --gtest_filter="${FILTER}" \
             --gtest_color=no \
-            --gtest_output="xml:${EVIDENCE_DIR}/gemini-tests-results.xml" \
-            2>&1 | tee "${EVIDENCE_DIR}/gemini-tests-raw.txt"
+            --gtest_output=xml:agricultural-guidance-gemini-run-evidence/gtest-results.xml \
+            2>&1 | tee agricultural-guidance-gemini-run-evidence/gtest-run.log
+          TEST_EXIT_STATUS=${PIPESTATUS[0]}
+          set -e
 
-          STATUS=${PIPESTATUS[0]}
-          echo "${STATUS}" > "${EVIDENCE_DIR}/gemini-tests-exit-status.txt"
-          exit "${STATUS}"
-
-      - name: Extract Gemini test failures
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          LOG="${EVIDENCE_DIR}/gemini-tests-raw.txt"
-          OUT="${EVIDENCE_DIR}/gemini-test-failures.txt"
-
-          if [ ! -f "${LOG}" ]; then
-            echo "Gemini tests were not executed." > "${OUT}"
-            exit 0
-          fi
-
-          grep -nE '\[  FAILED  \]|Failure|FAILED TEST|Segmentation fault|core dumped|Terminated|Timeout' \
-            "${LOG}" > "${OUT}" || true
-
-          test -s "${OUT}" || echo "No Gemini test failure was detected." > "${OUT}"
-
-      - name: Verify repository integrity
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          sha256sum \
-            "${GENERATED_TEST}" \
-            "${TARGET_SOURCE}" \
-            test/CMakeLists.txt \
-            > "${EVIDENCE_DIR}/input-sha256-after.txt"
-
-          if cmp -s "${EVIDENCE_DIR}/input-sha256-before.txt" "${EVIDENCE_DIR}/input-sha256-after.txt"; then
-            echo "Generated test, production source, and CMake integration are unchanged." \
-              > "${EVIDENCE_DIR}/repository-integrity.txt"
-          else
-            echo "WARNING: at least one experimental input changed." \
-              > "${EVIDENCE_DIR}/repository-integrity-warning.txt"
-          fi
-
-          git status --short --untracked-files=all \
-            > "${EVIDENCE_DIR}/git-status-after-tests.txt"
-
-      - name: Summarize Gemini test execution
-        if: always()
-        shell: bash
-        run: |
-          set +e
-          value_or_unavailable() {
-            if [ -f "$1" ]; then cat "$1"; else echo "unavailable"; fi
-          }
           {
-            echo "Gemini AgriculturalGuidanceInterface corrected test execution summary"
+            echo "Gemini AgriculturalGuidanceInterface generated tests run summary"
             echo
             echo "Commit: ${GITHUB_SHA}"
-            echo "Build exit status: $(value_or_unavailable "${EVIDENCE_DIR}/build-exit-status.txt")"
-            echo "Detected Gemini tests: $(value_or_unavailable "${EVIDENCE_DIR}/gemini-test-count.txt")"
-            echo "Gemini tests exit status: $(value_or_unavailable "${EVIDENCE_DIR}/gemini-tests-exit-status.txt")"
-            echo
-            if [ -f "${EVIDENCE_DIR}/gemini-tests-raw.txt" ]; then
-              grep -E '^\[==========\]|^\[  PASSED  \]|^\[  FAILED  \]' \
-                "${EVIDENCE_DIR}/gemini-tests-raw.txt" || true
-            fi
-            echo
-            echo "This workflow executes only the corrected Gemini tests."
-            echo "It does not measure coverage and does not execute Mull."
-          } | tee "${EVIDENCE_DIR}/gemini-test-execution-summary.txt"
+            echo "Filter: ${FILTER}"
+            echo "Test exit status: ${TEST_EXIT_STATUS}"
+          } | tee agricultural-guidance-gemini-run-evidence/run-summary.txt
 
-      - name: Upload Gemini test execution evidence
+          exit "${TEST_EXIT_STATUS}"
+
+      - name: Upload execution evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: agricultural-guidance-gemini-test-evidence
-          path: agricultural-guidance-gemini-test-evidence
-          if-no-files-found: error
+          name: agricultural-guidance-gemini-run-evidence
+          path: agricultural-guidance-gemini-run-evidence/
+          if-no-files-found: warn
           retention-days: 30
