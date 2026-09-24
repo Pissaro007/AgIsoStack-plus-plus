@@ -278,67 +278,42 @@ namespace isobus
 	TEST_F(AgriculturalGuidanceInterfaceTest, SendGuidanceSystemCommandEncodingAndClamping)
 	{
 		TestableAgriculturalGuidanceInterface interface(internalSender, externalDest, true, false);
-
-		CANMessage sentMessage(CANMessage::Type::Transmit, CANIdentifier(0), nullptr, 0, nullptr, nullptr, 0);
-		bool messageTransmitted = false;
-
-		auto listenerId = CANNetworkManager::CANNetwork.get_transmitted_message_event_dispatcher().add_listener([&](const CANMessage &msg) {
-			if (msg.is_parameter_group_number(CANLibParameterGroupNumber::AgriculturalGuidanceSystemCommand))
-			{
-				sentMessage = msg;
-				messageTransmitted = true;
-			}
-		});
+		CANMessageFrame transmittedFrame = {};
 
 		// 1. Normal value: 0 km-1
 		interface.guidanceSystemCommandTransmitData.set_curvature(0.0f);
 		interface.guidanceSystemCommandTransmitData.set_status(AgriculturalGuidanceInterface::GuidanceSystemCommand::CurvatureCommandStatus::IntendedToSteer);
-
 		ASSERT_TRUE(interface.send_guidance_system_command());
-		CANNetworkManager::CANNetwork.update();
-		ASSERT_TRUE(messageTransmitted);
-		ASSERT_EQ(8u, sentMessage.get_data_length());
-		EXPECT_EQ(32128, sentMessage.get_uint16_at(0));
-		EXPECT_EQ(0xFD, sentMessage.get_uint8_at(2)); // IntendedToSteer (1) | 0xFC
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(transmittedFrame));
+		ASSERT_EQ(8, transmittedFrame.dataLength);
+		EXPECT_EQ(32128, static_cast<std::uint16_t>(transmittedFrame.data[0]) | (static_cast<std::uint16_t>(transmittedFrame.data[1]) << 8));
+		EXPECT_EQ(0xFD, transmittedFrame.data[2]);
 
-		// 2. Max clamping
-		messageTransmitted = false;
+		// 2. Maximum clamping
 		interface.guidanceMachineInfoTransmitData.set_estimated_curvature(9000.0f);
 		interface.guidanceSystemCommandTransmitData.set_curvature(9000.0f);
 		ASSERT_TRUE(interface.send_guidance_system_command());
-		CANNetworkManager::CANNetwork.update();
-		ASSERT_TRUE(messageTransmitted);
-		ASSERT_EQ(8u, sentMessage.get_data_length());
-		EXPECT_EQ(32127 + 32128, sentMessage.get_uint16_at(0));
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(transmittedFrame));
+		ASSERT_EQ(8, transmittedFrame.dataLength);
+		EXPECT_EQ(32127 + 32128, static_cast<std::uint16_t>(transmittedFrame.data[0]) | (static_cast<std::uint16_t>(transmittedFrame.data[1]) << 8));
 
-		// Reset estimated curvature
+		// Reset estimated curvature before testing minimum clamping.
 		interface.guidanceMachineInfoTransmitData.set_estimated_curvature(0.0f);
 
-		// 3. Min clamping
-		messageTransmitted = false;
+		// 3. Minimum clamping
 		interface.guidanceSystemCommandTransmitData.set_curvature(-9000.0f);
 		ASSERT_TRUE(interface.send_guidance_system_command());
-		CANNetworkManager::CANNetwork.update();
-		ASSERT_TRUE(messageTransmitted);
-		ASSERT_EQ(8u, sentMessage.get_data_length());
-		EXPECT_EQ(0, sentMessage.get_uint16_at(0));
-		CANNetworkManager::CANNetwork.get_transmitted_message_event_dispatcher().remove_listener(listenerId);
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(transmittedFrame));
+		ASSERT_EQ(8, transmittedFrame.dataLength);
+		EXPECT_EQ(0, static_cast<std::uint16_t>(transmittedFrame.data[0]) | (static_cast<std::uint16_t>(transmittedFrame.data[1]) << 8));
 	}
-
 	TEST_F(AgriculturalGuidanceInterfaceTest, SendGuidanceMachineInfoEncodingAndClamping)
 	{
 		TestableAgriculturalGuidanceInterface interface(internalSender, externalDest, false, true);
-
-		CANMessage sentMessage(CANMessage::Type::Transmit, CANIdentifier(0), nullptr, 0, nullptr, nullptr, 0);
-		bool messageTransmitted = false;
-
-		auto listenerId = CANNetworkManager::CANNetwork.get_transmitted_message_event_dispatcher().add_listener([&](const CANMessage &msg) {
-			if (msg.is_parameter_group_number(CANLibParameterGroupNumber::AgriculturalGuidanceMachineInfo))
-			{
-				sentMessage = msg;
-				messageTransmitted = true;
-			}
-		});
+		CANMessageFrame transmittedFrame = {};
 
 		interface.guidanceMachineInfoTransmitData.set_estimated_curvature(1.0f);
 		interface.guidanceMachineInfoTransmitData.set_mechanical_system_lockout_state(AgriculturalGuidanceInterface::GuidanceMachineInfo::MechanicalSystemLockout::Active);
@@ -350,25 +325,22 @@ namespace isobus
 		interface.guidanceMachineInfoTransmitData.set_guidance_system_remote_engage_switch_status(AgriculturalGuidanceInterface::GuidanceMachineInfo::GenericSAEbs02SlotValue::EnabledOnActive);
 
 		ASSERT_TRUE(interface.send_guidance_machine_info());
-		CANNetworkManager::CANNetwork.update();
-		ASSERT_TRUE(messageTransmitted);
-		ASSERT_EQ(8u, sentMessage.get_data_length());
-		EXPECT_EQ(32132, sentMessage.get_uint16_at(0));
-		EXPECT_EQ(0x05, sentMessage.get_uint8_at(2));
-		EXPECT_EQ(0x40, sentMessage.get_uint8_at(3));
-		EXPECT_EQ(0x43, sentMessage.get_uint8_at(4));
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(transmittedFrame));
+		ASSERT_EQ(8, transmittedFrame.dataLength);
+		EXPECT_EQ(32132, static_cast<std::uint16_t>(transmittedFrame.data[0]) | (static_cast<std::uint16_t>(transmittedFrame.data[1]) << 8));
+		EXPECT_EQ(0x05, transmittedFrame.data[2]);
+		EXPECT_EQ(0x40, transmittedFrame.data[3]);
+		EXPECT_EQ(0x43, transmittedFrame.data[4]);
 
-		// Min clamping
-		messageTransmitted = false;
+		// Minimum clamping
 		interface.guidanceMachineInfoTransmitData.set_estimated_curvature(-9000.0f);
 		ASSERT_TRUE(interface.send_guidance_machine_info());
-		CANNetworkManager::CANNetwork.update();
-		ASSERT_TRUE(messageTransmitted);
-		ASSERT_EQ(8u, sentMessage.get_data_length());
-		EXPECT_EQ(0, sentMessage.get_uint16_at(0));
-		CANNetworkManager::CANNetwork.get_transmitted_message_event_dispatcher().remove_listener(listenerId);
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(transmittedFrame));
+		ASSERT_EQ(8, transmittedFrame.dataLength);
+		EXPECT_EQ(0, static_cast<std::uint16_t>(transmittedFrame.data[0]) | (static_cast<std::uint16_t>(transmittedFrame.data[1]) << 8));
 	}
-
 	TEST_F(AgriculturalGuidanceInterfaceTest, SendWithoutSenderReturnsFalse)
 	{
 		TestableAgriculturalGuidanceInterface interface(nullptr, nullptr, false, false);
@@ -379,41 +351,25 @@ namespace isobus
 	TEST_F(AgriculturalGuidanceInterfaceTest, ProcessFlagsCallback)
 	{
 		TestableAgriculturalGuidanceInterface interface(internalSender, externalDest, true, true);
-
-		CANMessage sentMessage(CANMessage::Type::Transmit, CANIdentifier(0), nullptr, 0, nullptr, nullptr, 0);
-		bool messageTransmitted = false;
-
-		auto listenerIdSystem = CANNetworkManager::CANNetwork.get_transmitted_message_event_dispatcher().add_listener([&](const CANMessage &msg) {
-			if (msg.is_parameter_group_number(CANLibParameterGroupNumber::AgriculturalGuidanceSystemCommand))
-			{
-				sentMessage = msg;
-				messageTransmitted = true;
-			}
-		});
+		CANMessageFrame transmittedFrame = {};
 
 		TestableAgriculturalGuidanceInterface::process_flags(static_cast<std::uint32_t>(TestableAgriculturalGuidanceInterface::TransmitFlags::SendGuidanceSystemCommand), &interface);
-		CANNetworkManager::CANNetwork.update();
-		EXPECT_TRUE(messageTransmitted);
-		CANNetworkManager::CANNetwork.get_transmitted_message_event_dispatcher().remove_listener(listenerIdSystem);
-
-		messageTransmitted = false;
-		auto listenerIdMachine = CANNetworkManager::CANNetwork.get_transmitted_message_event_dispatcher().add_listener([&](const CANMessage &msg) {
-			if (msg.is_parameter_group_number(CANLibParameterGroupNumber::AgriculturalGuidanceMachineInfo))
-			{
-				sentMessage = msg;
-				messageTransmitted = true;
-			}
-		});
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(transmittedFrame));
+		EXPECT_EQ(8, transmittedFrame.dataLength);
+		CANIdentifier systemCommandIdentifier(transmittedFrame.identifier);
+		EXPECT_EQ(static_cast<std::uint32_t>(CANLibParameterGroupNumber::AgriculturalGuidanceSystemCommand), systemCommandIdentifier.get_parameter_group_number());
 
 		TestableAgriculturalGuidanceInterface::process_flags(static_cast<std::uint32_t>(TestableAgriculturalGuidanceInterface::TransmitFlags::SendGuidanceMachineInfo), &interface);
-		CANNetworkManager::CANNetwork.update();
-		EXPECT_TRUE(messageTransmitted);
-		CANNetworkManager::CANNetwork.get_transmitted_message_event_dispatcher().remove_listener(listenerIdMachine);
+		time_source.update_for_ms(5);
+		ASSERT_TRUE(testPlugin.read_frame(transmittedFrame));
+		EXPECT_EQ(8, transmittedFrame.dataLength);
+		CANIdentifier machineInfoIdentifier(transmittedFrame.identifier);
+		EXPECT_EQ(static_cast<std::uint32_t>(CANLibParameterGroupNumber::AgriculturalGuidanceMachineInfo), machineInfoIdentifier.get_parameter_group_number());
 
 		TestableAgriculturalGuidanceInterface::process_flags(999, &interface);
 		TestableAgriculturalGuidanceInterface::process_flags(static_cast<std::uint32_t>(TestableAgriculturalGuidanceInterface::TransmitFlags::SendGuidanceSystemCommand), nullptr);
 	}
-
 	TEST_F(AgriculturalGuidanceInterfaceTest, UpdateWithoutInitialize)
 	{
 		AgriculturalGuidanceInterface interface(internalSender, externalDest, true, true);
