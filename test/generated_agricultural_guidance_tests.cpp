@@ -10,6 +10,10 @@
 #include "isobus/isobus/can_message.hpp"
 #include "isobus/isobus/can_message_frame.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
+#include "isobus/hardware_integration/can_hardware_interface.hpp"
+#include "isobus/hardware_integration/virtual_can_plugin.hpp"
+#include "isobus/utility/system_timing.hpp"
+#include "isobus/utility/time_source.hpp"
 #include "isobus/isobus/isobus_guidance_interface.hpp"
 
 namespace isobus
@@ -18,13 +22,19 @@ namespace isobus
 	{
 	public:
 		using AgriculturalGuidanceInterface::AgriculturalGuidanceInterface;
-		using AgriculturalGuidanceInterface::send_guidance_machine_info;
-		using AgriculturalGuidanceInterface::send_guidance_system_command;
+		bool send_guidance_machine_info() const { const bool r = AgriculturalGuidanceInterface::send_guidance_machine_info(); CANHardwareInterface::update(); CANHardwareInterface::update(); return r; }
+		bool send_guidance_system_command() const { const bool r = AgriculturalGuidanceInterface::send_guidance_system_command(); CANHardwareInterface::update(); CANHardwareInterface::update(); return r; }
+		static void process_received_message(const CANMessage &message, AgriculturalGuidanceInterface *target) { AgriculturalGuidanceInterface::process_rx_message(message, target); }
+	};
 
-		static void process_received_message(const CANMessage &message, AgriculturalGuidanceInterface *target)
-		{
-			AgriculturalGuidanceInterface::process_rx_message(message, target);
-		}
+	class ManualGuidanceTimeSource : public TimeSource
+	{
+	public:
+		std::uint32_t get_current_time_ms() const override { return now_ms; }
+		std::uint64_t get_current_time_us() const override { return static_cast<std::uint64_t>(now_ms) * 1000ULL; }
+		void advance_ms(std::uint32_t delta) { now_ms += delta; }
+	private:
+		std::uint32_t now_ms = 0;
 	};
 
 	class AgriculturalGuidanceTest : public ::testing::Test
@@ -32,6 +42,11 @@ namespace isobus
 	protected:
 		void SetUp() override
 		{
+			SystemTiming::override_time_source(&timeSource);
+			ASSERT_TRUE(CANHardwareInterface::set_number_of_can_channels(1));
+			virtualCAN = std::make_shared<VirtualCANPlugin>("gemini-guidance", true);
+			ASSERT_TRUE(CANHardwareInterface::assign_can_channel_frame_handler(0, virtualCAN));
+			ASSERT_TRUE(CANHardwareInterface::start(false));
 			CANNetworkManager::CANNetwork.initialize();
 
 			// NAME values for constructing control functions
@@ -54,6 +69,13 @@ namespace isobus
 			cf2Name.set_identity_number(2);
 
 			srcICF = CANNetworkManager::CANNetwork.create_internal_control_function(sourceName, 0, 0x10);
+			for (std::size_t i = 0; (i < 200) && (!srcICF->get_address_valid()); ++i)
+			{
+				timeSource.advance_ms(5);
+				CANHardwareInterface::update();
+			}
+			ASSERT_TRUE(srcICF->get_address_valid());
+			ASSERT_EQ(0x10, srcICF->get_address());
 			destCF = std::make_shared<ControlFunction>(destName, 0x20, 0, ControlFunction::Type::External);
 			externalCF1 = std::make_shared<ControlFunction>(cf1Name, 0x30, 0, ControlFunction::Type::External);
 			externalCF2 = std::make_shared<ControlFunction>(cf2Name, 0x40, 0, ControlFunction::Type::External);
@@ -61,8 +83,13 @@ namespace isobus
 
 		void TearDown() override
 		{
+			if (srcICF) CANNetworkManager::CANNetwork.deactivate_control_function(srcICF);
+			if (CANHardwareInterface::is_running()) CANHardwareInterface::stop();
+			SystemTiming::override_time_source(nullptr);
 		}
 
+		ManualGuidanceTimeSource timeSource;
+		std::shared_ptr<VirtualCANPlugin> virtualCAN;
 		std::shared_ptr<InternalControlFunction> srcICF;
 		std::shared_ptr<ControlFunction> destCF;
 		std::shared_ptr<ControlFunction> externalCF1;
