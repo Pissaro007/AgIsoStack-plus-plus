@@ -220,63 +220,55 @@ jobs:
           fi
 
           python3 - "${json_file}" "${summary_file}" "${line_details}" "${branch_details}" "${CONFIGURATION_LABEL}" <<'PY'
-import json
-import sys
-
-json_path, summary_path, line_path, branch_path, label = sys.argv[1:6]
-with open(json_path, encoding="utf-8") as source:
-    report = json.load(source)
-
-files = report.get("files", [])
-if len(files) != 1:
-    raise SystemExit(f"Expected exactly one filtered source file, found {len(files)}")
-
-source_file = files[0]
-lines = source_file.get("lines", [])
-line_total = len(lines)
-line_covered = sum(1 for line in lines if line.get("count", 0) > 0)
-
-branches = []
-for line in lines:
-    line_number = line.get("line_number")
-    for branch_index, branch in enumerate(line.get("branches", [])):
-        branches.append((line_number, branch_index, branch))
-
-branch_total = len(branches)
-branch_covered = sum(1 for _, _, branch in branches if branch.get("count", 0) > 0)
-line_percent = 100.0 * line_covered / line_total if line_total else 0.0
-branch_percent = 100.0 * branch_covered / branch_total if branch_total else 0.0
-
-with open(summary_path, "w", encoding="utf-8") as target:
-    target.write("Target: isobus/src/isobus_guidance_interface.cpp
-")
-    target.write(f"Configuration: {label}
-")
-    target.write(f"Lines: {line_covered}/{line_total} ({line_percent:.2f}%)
-")
-    target.write(f"Branches: {branch_covered}/{branch_total} ({branch_percent:.2f}%)
-")
-
-with open(line_path, "w", encoding="utf-8") as target:
-    target.write("line	count	covered
-")
-    for line in lines:
-        count = line.get("count", 0)
-        target.write(f"{line.get('line_number')}	{count}	{str(count > 0).lower()}
-")
-
-with open(branch_path, "w", encoding="utf-8") as target:
-    target.write("line	branch_index	blockno	count	covered	fallthrough	throw
-")
-    for line_number, branch_index, branch in branches:
-        count = branch.get("count", 0)
-        target.write(
-            f"{line_number}	{branch_index}	{branch.get('blockno', '')}	{count}	"
-            f"{str(count > 0).lower()}	{str(branch.get('fallthrough', False)).lower()}	"
-            f"{str(branch.get('throw', False)).lower()}
-"
-        )
-PY
+          import json
+          import sys
+          
+          json_path, summary_path, line_path, branch_path, label = sys.argv[1:6]
+          with open(json_path, encoding="utf-8") as source:
+              report = json.load(source)
+          
+          files = report.get("files", [])
+          if len(files) != 1:
+              raise SystemExit(f"Expected exactly one filtered source file, found {len(files)}")
+          
+          source_file = files[0]
+          lines = source_file.get("lines", [])
+          line_total = len(lines)
+          line_covered = sum(1 for line in lines if line.get("count", 0) > 0)
+          branches = []
+          for line in lines:
+              line_number = line.get("line_number")
+              for branch_index, branch in enumerate(line.get("branches", [])):
+                  branches.append((line_number, branch_index, branch))
+          
+          branch_total = len(branches)
+          branch_covered = sum(1 for _, _, branch in branches if branch.get("count", 0) > 0)
+          line_percent = 100.0 * line_covered / line_total if line_total else 0.0
+          branch_percent = 100.0 * branch_covered / branch_total if branch_total else 0.0
+          
+          with open(summary_path, "w", encoding="utf-8") as target:
+              print("Target: isobus/src/isobus_guidance_interface.cpp", file=target)
+              print(f"Configuration: {label}", file=target)
+              print(f"Lines: {line_covered}/{line_total} ({line_percent:.2f}%)", file=target)
+              print(f"Branches: {branch_covered}/{branch_total} ({branch_percent:.2f}%)", file=target)
+          
+          with open(line_path, "w", encoding="utf-8") as target:
+              print("line\tcount\tcovered", file=target)
+              for line in lines:
+                  count = line.get("count", 0)
+                  print(f"{line.get('line_number')}\t{count}\t{str(count > 0).lower()}", file=target)
+          
+          with open(branch_path, "w", encoding="utf-8") as target:
+              print("line\tbranch_index\tblockno\tcount\tcovered\tfallthrough\tthrow", file=target)
+              for line_number, branch_index, branch in branches:
+                  count = branch.get("count", 0)
+                  print(
+                      f"{line_number}\t{branch_index}\t{branch.get('blockno', '')}\t{count}\t"
+                      f"{str(count > 0).lower()}\t{str(branch.get('fallthrough', False)).lower()}\t"
+                      f"{str(branch.get('throw', False)).lower()}",
+                      file=target,
+                  )
+          PY
 
       - name: Verify repository integrity
         if: always()
