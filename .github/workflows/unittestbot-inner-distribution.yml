@@ -1,0 +1,458 @@
+name: UnitTestBot inner distribution inspection
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/maintain-power-plus-unittestbot
+    paths:
+      - ".github/workflows/unittestbot-inner-distribution.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-unit-test-bot-distribution:
+    name: Inspect UnitTestBot inner distribution
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    env:
+      UTBOT_VERSION: "2024.3.0"
+      UTBOT_WORK_DIR: "${{ github.workspace }}/utbot-inner-inspection"
+      PROJECT_BUILD_DIR: "${{ github.workspace }}/build-utbot-inner-inspection"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create inspection directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "${UTBOT_WORK_DIR}/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted/distribution"
+          mkdir -p "${UTBOT_WORK_DIR}/logs"
+
+      - name: Record environment information
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch or tag: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo
+            echo "Operating system:"
+            cat /etc/os-release
+            echo
+            echo "Kernel:"
+            uname -a
+            echo
+            echo "CMake:"
+            cmake --version
+            echo
+            echo "C++ compiler:"
+            c++ --version
+            echo
+            echo "Ninja:"
+            ninja --version
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/environment.txt"
+
+      - name: Verify clean experimental starting point
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Checking the experimental starting point"
+            echo
+
+            if find . -type f -name "generated_maintain_power_tests.cpp" \
+              -not -path "./utbot-inner-inspection/*" \
+              -print | grep -q .; then
+              echo "ERROR: generated_maintain_power_tests.cpp is already present."
+              find . -type f -name "generated_maintain_power_tests.cpp" \
+                -not -path "./utbot-inner-inspection/*" \
+                -print
+              exit 1
+            fi
+
+            echo "No generated MaintainPowerInterface test file is present."
+            echo
+
+            if [ ! -f "CMakeLists.txt" ]; then
+              echo "ERROR: root CMakeLists.txt was not found."
+              exit 1
+            fi
+
+            echo "Root CMakeLists.txt found."
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/start-point-check.txt"
+
+      - name: Install inspection dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            file \
+            jq \
+            ninja-build \
+            tar \
+            unzip
+
+      - name: Configure project with CMake
+        shell: bash
+        run: |
+          set -o pipefail
+
+          cmake \
+            -S "${GITHUB_WORKSPACE}" \
+            -B "${PROJECT_BUILD_DIR}" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            2>&1 | tee "${UTBOT_WORK_DIR}/logs/cmake-configure.txt"
+
+      - name: Verify CMake compilation database
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            COMPILE_COMMANDS="${PROJECT_BUILD_DIR}/compile_commands.json"
+
+            if [ ! -s "${COMPILE_COMMANDS}" ]; then
+              echo "ERROR: compile_commands.json was not generated."
+              exit 1
+            fi
+
+            echo "Compilation database generated:"
+            ls -lh "${COMPILE_COMMANDS}"
+            echo
+
+            echo "Number of compilation commands:"
+            jq length "${COMPILE_COMMANDS}"
+            echo
+
+            echo "MaintainPowerInterface entries:"
+            jq -r \
+              '.[] | select(.file | contains("isobus_maintain_power_interface.cpp")) | .file' \
+              "${COMPILE_COMMANDS}"
+
+            MATCH_COUNT="$(
+              jq \
+                '[.[] | select(.file | contains("isobus_maintain_power_interface.cpp"))] | length' \
+                "${COMPILE_COMMANDS}"
+            )"
+
+            echo
+            echo "Matching entry count: ${MATCH_COUNT}"
+
+            if [ "${MATCH_COUNT}" -eq 0 ]; then
+              echo "ERROR: MaintainPowerInterface was not found in compile_commands.json."
+              exit 1
+            fi
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/compile-commands-check.txt"
+
+      - name: Query UnitTestBot release information
+        shell: bash
+        run: |
+          set -o pipefail
+
+          RELEASE_API_URL="https://api.github.com/repos/UnitTestBot/UTBotCpp/releases/tags/${UTBOT_VERSION}"
+          RELEASE_JSON="${UTBOT_WORK_DIR}/release/release-${UTBOT_VERSION}.json"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${RELEASE_API_URL}" \
+            --output "${RELEASE_JSON}"
+
+          {
+            echo "UnitTestBot release:"
+            jq -r '.name, .tag_name, .published_at, .html_url' "${RELEASE_JSON}"
+            echo
+            echo "Published assets:"
+            jq -r '.assets[] | [.name, .size, .browser_download_url] | @tsv' \
+              "${RELEASE_JSON}"
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-release-assets.txt"
+
+      - name: Download UnitTestBot release archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          RELEASE_JSON="${UTBOT_WORK_DIR}/release/release-${UTBOT_VERSION}.json"
+          ASSET_NAME="utbot-release-${UTBOT_VERSION}.zip"
+          ASSET_URL="$(
+            jq -r \
+              --arg name "${ASSET_NAME}" \
+              '.assets[] | select(.name == $name) | .browser_download_url' \
+              "${RELEASE_JSON}"
+          )"
+
+          if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
+            echo "ERROR: release asset ${ASSET_NAME} was not found."
+            exit 1
+          fi
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            "${ASSET_URL}" \
+            --output "${UTBOT_WORK_DIR}/release/${ASSET_NAME}"
+
+          ls -lh "${UTBOT_WORK_DIR}/release/${ASSET_NAME}" \
+            | tee "${UTBOT_WORK_DIR}/logs/downloaded-asset.txt"
+
+      - name: Extract UnitTestBot outer archive
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            OUTER_ARCHIVE="${UTBOT_WORK_DIR}/release/utbot-release-${UTBOT_VERSION}.zip"
+            RELEASE_DIR="${UTBOT_WORK_DIR}/extracted/release"
+
+            if [ ! -f "${OUTER_ARCHIVE}" ]; then
+              echo "ERROR: UnitTestBot outer archive was not found."
+              exit 1
+            fi
+
+            echo "Extracting outer archive:"
+            echo "${OUTER_ARCHIVE}"
+
+            unzip -q "${OUTER_ARCHIVE}" -d "${RELEASE_DIR}"
+
+            echo
+            echo "Files extracted from the outer archive:"
+            find "${RELEASE_DIR}" \
+              -maxdepth 2 \
+              -type f \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/outer-archive-extraction.txt"
+
+      - name: Record UnitTestBot launcher script
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            LAUNCHER="$(
+              find "${UTBOT_WORK_DIR}/extracted/release" \
+                -type f \
+                -name "unpack_and_run_utbot.sh" \
+                -print \
+                -quit
+            )"
+
+            if [ -z "${LAUNCHER}" ]; then
+              echo "ERROR: unpack_and_run_utbot.sh was not found."
+              exit 1
+            fi
+
+            echo "Launcher path:"
+            echo "${LAUNCHER}"
+            echo
+            echo "Launcher contents:"
+            sed -n '1,240p' "${LAUNCHER}"
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/unpack-and-run-utbot.txt"
+
+      - name: Extract UnitTestBot inner distribution
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            INNER_ARCHIVE="$(
+              find "${UTBOT_WORK_DIR}/extracted/release" \
+                -type f \
+                -name "utbot_distr.tar.gz" \
+                -print \
+                -quit
+            )"
+
+            DISTRIBUTION_DIR="${UTBOT_WORK_DIR}/extracted/distribution"
+
+            if [ -z "${INNER_ARCHIVE}" ]; then
+              echo "ERROR: utbot_distr.tar.gz was not found."
+              exit 1
+            fi
+
+            echo "Extracting inner distribution:"
+            echo "${INNER_ARCHIVE}"
+            echo
+            echo "Destination:"
+            echo "${DISTRIBUTION_DIR}"
+
+            tar -xzf "${INNER_ARCHIVE}" -C "${DISTRIBUTION_DIR}"
+
+            echo
+            echo "Top-level distribution contents:"
+            find "${DISTRIBUTION_DIR}" \
+              -maxdepth 3 \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/inner-distribution-extraction.txt"
+
+      - name: Inspect UnitTestBot distribution
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            DISTRIBUTION_DIR="${UTBOT_WORK_DIR}/extracted/distribution"
+
+            echo "Distribution disk usage:"
+            du -sh "${DISTRIBUTION_DIR}"
+            echo
+
+            echo "Executable files:"
+            find "${DISTRIBUTION_DIR}" \
+              -type f \
+              -executable \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+            echo
+
+            echo "Files whose names contain utbot:"
+            find "${DISTRIBUTION_DIR}" \
+              -type f \
+              -iname "*utbot*" \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+            echo
+
+            echo "Files whose names suggest a command-line interface:"
+            find "${DISTRIBUTION_DIR}" \
+              -type f \
+              \( \
+                -iname "*cli*" \
+                -o -iname "*server*" \
+                -o -iname "*client*" \
+                -o -iname "*runner*" \
+              \) \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+            echo
+
+            echo "Shell scripts:"
+            find "${DISTRIBUTION_DIR}" \
+              -type f \
+              -name "*.sh" \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-inner-inventory.txt"
+
+      - name: Identify UnitTestBot executable types
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            DISTRIBUTION_DIR="${UTBOT_WORK_DIR}/extracted/distribution"
+
+            find "${DISTRIBUTION_DIR}" \
+              -type f \
+              -executable \
+              -print0 |
+            while IFS= read -r -d '' EXECUTABLE; do
+              printf '%s\t' "${EXECUTABLE}"
+              file -b "${EXECUTABLE}"
+            done
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-executable-types.txt"
+
+      - name: Inspect shared library dependencies
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            DISTRIBUTION_DIR="${UTBOT_WORK_DIR}/extracted/distribution"
+
+            find "${DISTRIBUTION_DIR}" \
+              -type f \
+              -executable \
+              -print0 |
+            while IFS= read -r -d '' EXECUTABLE; do
+              if file -b "${EXECUTABLE}" | grep -q "ELF"; then
+                echo
+                echo "===== ${EXECUTABLE} ====="
+                ldd "${EXECUTABLE}" || true
+              fi
+            done
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-library-dependencies.txt"
+
+      - name: Search for UnitTestBot help and configuration files
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            DISTRIBUTION_DIR="${UTBOT_WORK_DIR}/extracted/distribution"
+
+            echo "README and documentation files:"
+            find "${DISTRIBUTION_DIR}" \
+              -type f \
+              \( \
+                -iname "README*" \
+                -o -iname "*USAGE*" \
+                -o -iname "*HELP*" \
+              \) \
+              -print \
+              | sort
+            echo
+
+            echo "Potential configuration files:"
+            find "${DISTRIBUTION_DIR}" \
+              -type f \
+              \( \
+                -name "*.json" \
+                -o -name "*.yaml" \
+                -o -name "*.yml" \
+                -o -name "*.conf" \
+                -o -name "*.ini" \
+                -o -name "*.properties" \
+              \) \
+              -print \
+              | sort
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-documentation-and-config.txt"
+
+      - name: Preserve CMake compilation database
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "${PROJECT_BUILD_DIR}/compile_commands.json" ]; then
+            cp \
+              "${PROJECT_BUILD_DIR}/compile_commands.json" \
+              "${UTBOT_WORK_DIR}/logs/compile_commands.json"
+          fi
+
+      - name: Upload UnitTestBot inner inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittestbot-inner-distribution-evidence
+          path: |
+            utbot-inner-inspection/logs
+            utbot-inner-inspection/release/*.json
+          if-no-files-found: warn
+          retention-days: 30
