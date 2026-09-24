@@ -54,6 +54,10 @@ namespace isobus
 			cf2Name.set_identity_number(2);
 
 			srcICF = CANNetworkManager::CANNetwork.create_internal_control_function(sourceName, 0, 0x10);
+			ASSERT_NE(nullptr, srcICF);
+			ASSERT_TRUE(srcICF->get_address_valid())
+			  << "ICF address: " << static_cast<unsigned>(srcICF->get_address())
+			  << ", state: " << static_cast<int>(srcICF->get_current_state());
 			destCF = std::make_shared<ControlFunction>(destName, 0x20, 0, ControlFunction::Type::External);
 			externalCF1 = std::make_shared<ControlFunction>(cf1Name, 0x30, 0, ControlFunction::Type::External);
 			externalCF2 = std::make_shared<ControlFunction>(cf2Name, 0x40, 0, ControlFunction::Type::External);
