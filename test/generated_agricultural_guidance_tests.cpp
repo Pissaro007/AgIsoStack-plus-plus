@@ -32,7 +32,7 @@ namespace isobus
 
 			NAME nameSender;
 			nameSender.set_arbitrary_address_capable(true);
-			nameSender.set_industry_group(NAME::IndustryGroup::AgriculturalAndForestryEquipment);
+			nameSender.set_industry_group(static_cast<std::uint8_t>(NAME::IndustryGroup::AgriculturalAndForestryEquipment));
 			nameSender.set_device_class(0);
 			nameSender.set_function_code(0);
 			nameSender.set_identity_number(1);
