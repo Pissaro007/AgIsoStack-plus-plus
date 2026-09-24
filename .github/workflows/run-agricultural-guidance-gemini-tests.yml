@@ -1,5 +1,7 @@
 name: Run corrected Gemini agricultural guidance tests
 
+#ci: rerun Gemini guidance tests after correction 2
+
 on:
   workflow_dispatch:
 
