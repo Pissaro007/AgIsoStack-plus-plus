@@ -1,0 +1,236 @@
+name: Compile initial Gemini agricultural guidance tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - research/agricultural-guidance-plus-gemini
+    paths:
+      - ".github/workflows/compile-initial-agricultural-guidance-gemini.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  compile-initial-gemini-tests:
+    name: Compile unmodified Gemini guidance tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    env:
+      BUILD_DIR: "${{ github.workspace }}/build-initial-agricultural-guidance-gemini"
+      EVIDENCE_DIR: "${{ github.workspace }}/agricultural-guidance-gemini-initial-build-evidence"
+      GENERATED_TEST: "test/generated_agricultural_guidance_tests.cpp"
+      TARGET_SOURCE: "isobus/src/isobus_guidance_interface.cpp"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Create evidence directory
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${EVIDENCE_DIR}"
+
+      - name: Record experiment identity
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Generator: Gemini"
+            echo "Generated test: ${GENERATED_TEST}"
+            echo "Target source: ${TARGET_SOURCE}"
+            echo "Recorded at: $(date --iso-8601=seconds)"
+            echo
+            cat /etc/os-release
+          } 2>&1 | tee "${EVIDENCE_DIR}/experiment-identity.txt"
+
+      - name: Verify unmodified experimental inputs
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            test -f "${GENERATED_TEST}" || { echo "ERROR: missing ${GENERATED_TEST}"; exit 1; }
+            test -f "${TARGET_SOURCE}" || { echo "ERROR: missing ${TARGET_SOURCE}"; exit 1; }
+            test -f test/CMakeLists.txt || { echo "ERROR: missing test/CMakeLists.txt"; exit 1; }
+
+            if ! grep -Fxq "    generated_agricultural_guidance_tests.cpp" test/CMakeLists.txt; then
+              echo "ERROR: generated test is not integrated in TEST_SRC."
+              exit 1
+            fi
+
+            echo "Generated test and target source are present."
+            echo "CMake integration is present."
+            echo
+            git status --short --untracked-files=all
+          } 2>&1 | tee "${EVIDENCE_DIR}/input-validation.txt"
+
+      - name: Preserve initial Gemini test and hashes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp "${GENERATED_TEST}" \
+            "${EVIDENCE_DIR}/generated_agricultural_guidance_tests-gemini-initial.cpp.txt"
+          sha256sum \
+            "${GENERATED_TEST}" \
+            "${TARGET_SOURCE}" \
+            test/CMakeLists.txt \
+            > "${EVIDENCE_DIR}/input-sha256-before.txt"
+
+      - name: Install build dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build
+          {
+            cmake --version
+            c++ --version
+            ninja --version
+          } 2>&1 | tee "${EVIDENCE_DIR}/toolchain-versions.txt"
+
+      - name: Configure initial build
+        id: configure
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          cmake \
+            -S "${GITHUB_WORKSPACE}" \
+            -B "${BUILD_DIR}" \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            2>&1 | tee "${EVIDENCE_DIR}/cmake-configure-raw.txt"
+          STATUS=${PIPESTATUS[0]}
+          echo "${STATUS}" > "${EVIDENCE_DIR}/cmake-configure-exit-status.txt"
+          exit "${STATUS}"
+
+      - name: Verify unit_tests target exists
+        if: steps.configure.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build "${BUILD_DIR}" --target help \
+            2>&1 | tee "${EVIDENCE_DIR}/available-build-targets.txt"
+          grep -Eq '(^|[[:space:]])unit_tests($|:|[[:space:]])' \
+            "${EVIDENCE_DIR}/available-build-targets.txt" || {
+              echo "ERROR: unit_tests target was not generated."
+              exit 1
+            }
+
+      - name: Compile initial generated tests
+        id: compile
+        if: steps.configure.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          cmake --build "${BUILD_DIR}" \
+            --target unit_tests \
+            --parallel 2 \
+            --verbose \
+            2>&1 | tee "${EVIDENCE_DIR}/initial-build-raw.txt"
+          STATUS=${PIPESTATUS[0]}
+          echo "${STATUS}" > "${EVIDENCE_DIR}/initial-build-exit-status.txt"
+          exit "${STATUS}"
+
+      - name: Extract compiler diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          LOG="${EVIDENCE_DIR}/initial-build-raw.txt"
+          ALL="${EVIDENCE_DIR}/initial-build-diagnostics.txt"
+          GENERATED="${EVIDENCE_DIR}/generated-test-diagnostics.txt"
+
+          if [ ! -f "${LOG}" ]; then
+            echo "Compilation was not started." > "${ALL}"
+            cp "${ALL}" "${GENERATED}"
+            exit 0
+          fi
+
+          grep -nE '(^|: )(fatal error|error|warning|note):|undefined reference|ninja: build stopped|FAILED:' \
+            "${LOG}" > "${ALL}" || true
+          grep -n -A 5 -B 2 'generated_agricultural_guidance_tests.cpp' \
+            "${LOG}" > "${GENERATED}" || true
+
+          test -s "${ALL}" || echo "No compiler diagnostic matched." > "${ALL}"
+          test -s "${GENERATED}" || echo "No diagnostic referenced the generated test." > "${GENERATED}"
+
+      - name: Count raw diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          LOG="${EVIDENCE_DIR}/initial-build-raw.txt"
+          OUT="${EVIDENCE_DIR}/initial-build-diagnostic-counts.txt"
+          if [ ! -f "${LOG}" ]; then
+            echo "Compiler diagnostics: unavailable" > "${OUT}"
+            exit 0
+          fi
+          {
+            echo "Compiler errors: $(grep -cE '(^|: )(fatal error|error):' "${LOG}" || true)"
+            echo "Compiler warnings: $(grep -cE '(^|: )warning:' "${LOG}" || true)"
+            echo "Compiler notes: $(grep -cE '(^|: )note:' "${LOG}" || true)"
+            echo
+            echo "These are raw diagnostic counts, not deduplicated root causes."
+          } > "${OUT}"
+
+      - name: Verify repository integrity
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          sha256sum \
+            "${GENERATED_TEST}" \
+            "${TARGET_SOURCE}" \
+            test/CMakeLists.txt \
+            > "${EVIDENCE_DIR}/input-sha256-after.txt"
+          if cmp -s "${EVIDENCE_DIR}/input-sha256-before.txt" "${EVIDENCE_DIR}/input-sha256-after.txt"; then
+            echo "Generated test, target source, and CMake integration are unchanged." \
+              > "${EVIDENCE_DIR}/repository-integrity.txt"
+          else
+            echo "WARNING: at least one experimental input changed." \
+              > "${EVIDENCE_DIR}/repository-integrity-warning.txt"
+          fi
+          git status --short --untracked-files=all \
+            > "${EVIDENCE_DIR}/git-status-after-build.txt"
+
+      - name: Summarize initial compilation
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          value_or_unavailable() {
+            if [ -f "$1" ]; then cat "$1"; else echo "unavailable"; fi
+          }
+          {
+            echo "Gemini AgriculturalGuidanceInterface initial compilation summary"
+            echo
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Configure exit status: $(value_or_unavailable "${EVIDENCE_DIR}/cmake-configure-exit-status.txt")"
+            echo "Build exit status: $(value_or_unavailable "${EVIDENCE_DIR}/initial-build-exit-status.txt")"
+            echo
+            cat "${EVIDENCE_DIR}/initial-build-diagnostic-counts.txt" 2>/dev/null || true
+            echo
+            echo "No generated source correction was applied by this workflow."
+          } | tee "${EVIDENCE_DIR}/initial-build-summary.txt"
+
+      - name: Upload initial Gemini compilation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agricultural-guidance-gemini-initial-build-evidence
+          path: agricultural-guidance-gemini-initial-build-evidence
+          if-no-files-found: error
+          retention-days: 30
