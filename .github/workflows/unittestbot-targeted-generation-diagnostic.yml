@@ -212,8 +212,6 @@ jobs:
           {
             UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
             UTBOT_EXECUTABLE="${UTBOT_ROOT}/server-install/utbot"
-            SYMBOLIZER="${UTBOT_ROOT}/install/bin/llvm-symbolizer"
-
             echo "UnitTestBot executable:"
             file "${UTBOT_EXECUTABLE}"
             sha256sum "${UTBOT_EXECUTABLE}"
@@ -227,13 +225,29 @@ jobs:
             "${UTBOT_ROOT}/install/bin/clang++" --version
             echo
 
-            echo "LLVM symbolizer:"
-            if [ -x "${SYMBOLIZER}" ]; then
-              echo "${SYMBOLIZER}"
-              "${SYMBOLIZER}" --version
+            echo "LLVM symbolizer candidates:"
+            find "${UTBOT_ROOT}" \
+              -type f \
+              \( -name "llvm-symbolizer" -o -name "llvm-symbolizer-*" \) \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+            echo
+
+            SYMBOLIZER="$(
+              find "${UTBOT_ROOT}" \
+                -type f \
+                \( -name "llvm-symbolizer" -o -name "llvm-symbolizer-*" \) \
+                -executable \
+                -print \
+                -quit
+            )"
+
+            if [ -n "${SYMBOLIZER}" ]; then
+              echo "Selected LLVM symbolizer: ${SYMBOLIZER}"
+              "${SYMBOLIZER}" --version || true
             else
-              echo "ERROR: bundled llvm-symbolizer was not found or is not executable."
-              exit 1
+              echo "WARNING: no executable LLVM symbolizer is bundled in this UnitTestBot distribution."
+              echo "The diagnostic retry will continue; the raw stack and any GDB core backtrace will still be preserved."
             fi
           } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/toolchain-identity.txt"
 
@@ -349,7 +363,23 @@ jobs:
           RAW_STATUS_FILE="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-raw-exit-status.txt"
           FINAL_STATUS_FILE="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-step-exit-status.txt"
 
-          export LLVM_SYMBOLIZER_PATH="${UTBOT_ROOT}/install/bin/llvm-symbolizer"
+          SYMBOLIZER="$(
+            find "${UTBOT_ROOT}" \
+              -type f \
+              \( -name "llvm-symbolizer" -o -name "llvm-symbolizer-*" \) \
+              -executable \
+              -print \
+              -quit
+          )"
+
+          if [ -n "${SYMBOLIZER}" ]; then
+            export LLVM_SYMBOLIZER_PATH="${SYMBOLIZER}"
+            echo "Using LLVM symbolizer: ${LLVM_SYMBOLIZER_PATH}"
+          else
+            unset LLVM_SYMBOLIZER_PATH
+            echo "No bundled LLVM symbolizer is available; continuing without LLVM stack symbolization."
+          fi
+
           export PATH="${UTBOT_ROOT}/install/bin:${PATH}"
           ulimit -c unlimited
 
