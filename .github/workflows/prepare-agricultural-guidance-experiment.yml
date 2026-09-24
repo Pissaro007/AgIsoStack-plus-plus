@@ -1,0 +1,381 @@
+name: Prepare AgriculturalGuidanceInterface experiment
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/agricultural-guidance-plus-gpt56
+    paths:
+      - ".github/workflows/prepare-agricultural-guidance-experiment.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-experiment:
+    name: Prepare controlled GPT context and human reference
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    env:
+      PREPARATION_DIR: "${{ github.workspace }}/agricultural-guidance-experiment"
+      GPT_CONTEXT_DIR: "${{ github.workspace }}/agricultural-guidance-experiment/gpt-context-agricultural-guidance"
+      HUMAN_REFERENCE_DIR: "${{ github.workspace }}/agricultural-guidance-experiment/human-reference-agricultural-guidance"
+      TARGET_SOURCE: "isobus/src/isobus_guidance_interface.cpp"
+      TARGET_HEADER: "isobus/include/isobus/isobus/isobus_guidance_interface.hpp"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Record experiment identity
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "${PREPARATION_DIR}/evidence"
+          mkdir -p "${GPT_CONTEXT_DIR}/repository"
+          mkdir -p "${HUMAN_REFERENCE_DIR}/repository"
+
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Target source: ${TARGET_SOURCE}"
+            echo "Target header: ${TARGET_HEADER}"
+            echo "Prepared at: $(date --iso-8601=seconds)"
+          } | tee "${PREPARATION_DIR}/evidence/experiment-identity.txt"
+
+      - name: Verify target and clean experimental start
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            if [ ! -f "${TARGET_SOURCE}" ]; then
+              echo "ERROR: target source was not found: ${TARGET_SOURCE}"
+              exit 1
+            fi
+
+            if [ ! -f "${TARGET_HEADER}" ]; then
+              echo "ERROR: target header was not found: ${TARGET_HEADER}"
+              exit 1
+            fi
+
+            if find test -type f \
+              \( \
+                -name "generated_agricultural_guidance_tests.cpp" \
+                -o -name "generated_guidance_tests.cpp" \
+              \) \
+              -print 2>/dev/null | grep -q .; then
+              echo "ERROR: a generated AgriculturalGuidanceInterface test file already exists."
+              find test -type f \
+                \( \
+                  -name "generated_agricultural_guidance_tests.cpp" \
+                  -o -name "generated_guidance_tests.cpp" \
+                \) \
+                -print
+              exit 1
+            fi
+
+            echo "Target source and header are present."
+            echo "No generated AgriculturalGuidanceInterface test file is present."
+          } 2>&1 | tee "${PREPARATION_DIR}/evidence/start-point-check.txt"
+
+      - name: Inventory potential human guidance tests
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Files under test/ whose path or content refers to guidance:"
+            echo
+
+            {
+              find test -type f \
+                \( \
+                  -iname "*guidance*" \
+                  -o -iname "*agricultural*" \
+                \) \
+                -print 2>/dev/null
+
+              grep -RIlE \
+                'AgriculturalGuidanceInterface|GuidanceMachineInfo|GuidanceSystemCommand|AgriculturalGuidanceMachineInfo|AgriculturalGuidanceSystemCommand' \
+                test 2>/dev/null || true
+            } | sort -u
+          } | tee "${PREPARATION_DIR}/evidence/human-guidance-test-candidates.txt"
+
+      - name: Build authorized GPT production context
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          copy_file() {
+            local source_path="$1"
+            local destination_path="${GPT_CONTEXT_DIR}/repository/${source_path}"
+
+            if [ ! -f "${source_path}" ]; then
+              echo "ERROR: required GPT context file was not found: ${source_path}"
+              exit 1
+            fi
+
+            mkdir -p "$(dirname "${destination_path}")"
+            cp "${source_path}" "${destination_path}"
+          }
+
+          copy_optional_file() {
+            local source_path="$1"
+            local destination_path="${GPT_CONTEXT_DIR}/repository/${source_path}"
+
+            if [ -f "${source_path}" ]; then
+              mkdir -p "$(dirname "${destination_path}")"
+              cp "${source_path}" "${destination_path}"
+            else
+              echo "OPTIONAL FILE NOT FOUND: ${source_path}" \
+                >> "${PREPARATION_DIR}/evidence/optional-context-files-not-found.txt"
+            fi
+          }
+
+          copy_file "${TARGET_SOURCE}"
+          copy_file "${TARGET_HEADER}"
+
+          copy_file "isobus/include/isobus/isobus/can_general_parameter_group_numbers.hpp"
+          copy_file "isobus/include/isobus/isobus/can_message.hpp"
+          copy_file "isobus/include/isobus/isobus/can_identifier.hpp"
+          copy_file "isobus/include/isobus/isobus/can_control_function.hpp"
+          copy_file "isobus/include/isobus/isobus/can_internal_control_function.hpp"
+          copy_file "isobus/include/isobus/isobus/can_network_manager.hpp"
+          copy_file "isobus/include/isobus/isobus/can_stack_logger.hpp"
+
+          copy_file "utility/include/isobus/utility/processing_flags.hpp"
+          copy_file "utility/include/isobus/utility/event_dispatcher.hpp"
+          copy_file "utility/include/isobus/utility/system_timing.hpp"
+
+          copy_optional_file "utility/include/isobus/utility/time_source.hpp"
+          copy_optional_file "utility/include/isobus/utility/chrono_time_source.hpp"
+          copy_optional_file "isobus/include/isobus/isobus/can_NAME.hpp"
+          copy_optional_file "isobus/include/isobus/isobus/can_NAME_filter.hpp"
+          copy_optional_file "isobus/include/isobus/isobus/can_message_data.hpp"
+          copy_optional_file "isobus/include/isobus/isobus/can_message_frame.hpp"
+
+          copy_file "CMakeLists.txt"
+          copy_file "test/CMakeLists.txt"
+          copy_file "isobus/CMakeLists.txt"
+          copy_file "utility/CMakeLists.txt"
+
+      - name: Add controlled integration guidance for GPT-5.6
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cat > "${GPT_CONTEXT_DIR}/README-GPT-CONTEXT.txt" <<'EOF'
+          AgriculturalGuidanceInterface controlled generation context
+
+          Objective
+          ---------
+          Generate an independent complementary GoogleTest file for:
+
+              isobus/src/isobus_guidance_interface.cpp
+
+          Required output path
+          --------------------
+
+              test/generated_agricultural_guidance_tests.cpp
+
+          Experimental restrictions
+          -------------------------
+          - Do not modify production code.
+          - Do not modify existing human tests.
+          - Do not invent APIs that are absent from the supplied production context.
+          - Do not assume access to repository history or human reference tests.
+          - Keep the generated test file independent from human test helpers.
+          - Use GoogleTest and the actual public production APIs.
+          - Prefer precise behavioral oracles over assertions that only verify execution.
+
+          Important oracle categories
+          ---------------------------
+          - Exact CAN payload bytes and PGNs for transmitted messages.
+          - Curvature conversion, rounding, and boundary clamping.
+          - Bit masks and shifts for GuidanceMachineInfo fields.
+          - Callback count, callback arguments, and the changed flag.
+          - Distinct source control functions and object reuse per source.
+          - Rejection of malformed messages and null sources.
+          - Periodic transmission and expiration behavior when controllable.
+          - Retry behavior after a failed transmission when observable.
+
+          Forbidden reference material
+          ----------------------------
+          No existing test source or test helper from the repository is included in this artifact.
+          The existing test/CMakeLists.txt is supplied only to explain project integration and target structure.
+          EOF
+
+      - name: Build human reference artifact
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          CANDIDATE_LIST="${PREPARATION_DIR}/evidence/human-guidance-test-candidates.txt"
+          COPIED_LIST="${PREPARATION_DIR}/evidence/human-reference-files-copied.txt"
+
+          : > "${COPIED_LIST}"
+
+          while IFS= read -r source_path; do
+            [ -n "${source_path}" ] || continue
+            [ -f "${source_path}" ] || continue
+
+            destination_path="${HUMAN_REFERENCE_DIR}/repository/${source_path}"
+            mkdir -p "$(dirname "${destination_path}")"
+            cp "${source_path}" "${destination_path}"
+            echo "${source_path}" >> "${COPIED_LIST}"
+          done < "${CANDIDATE_LIST}"
+
+          for source_path in \
+            "test/CMakeLists.txt" \
+            "CMakeLists.txt"; do
+            if [ -f "${source_path}" ]; then
+              destination_path="${HUMAN_REFERENCE_DIR}/repository/${source_path}"
+              mkdir -p "$(dirname "${destination_path}")"
+              cp "${source_path}" "${destination_path}"
+              echo "${source_path}" >> "${COPIED_LIST}"
+            fi
+          done
+
+          sort -u "${COPIED_LIST}" -o "${COPIED_LIST}"
+
+          cat > "${HUMAN_REFERENCE_DIR}/README-HUMAN-REFERENCE.txt" <<'EOF'
+          Human reference for AgriculturalGuidanceInterface
+
+          This artifact is reserved for establishing the human baseline and for comparative evaluation.
+          It must not be supplied to GPT-5.6, Gemini, UnitTestBot, or any other test generator.
+          EOF
+
+      - name: Create context inventories and hashes
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          find "${GPT_CONTEXT_DIR}" \
+            -type f \
+            -printf '%P\t%s\n' \
+            | sort \
+            > "${GPT_CONTEXT_DIR}/gpt-context-inventory.txt"
+
+          find "${HUMAN_REFERENCE_DIR}" \
+            -type f \
+            -printf '%P\t%s\n' \
+            | sort \
+            > "${HUMAN_REFERENCE_DIR}/human-reference-inventory.txt"
+
+          find "${GPT_CONTEXT_DIR}" \
+            -type f \
+            ! -name "gpt-context-sha256.txt" \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > "${GPT_CONTEXT_DIR}/gpt-context-sha256.txt"
+
+          find "${HUMAN_REFERENCE_DIR}" \
+            -type f \
+            ! -name "human-reference-sha256.txt" \
+            -print0 \
+            | sort -z \
+            | xargs -0 sha256sum \
+            > "${HUMAN_REFERENCE_DIR}/human-reference-sha256.txt"
+
+      - name: Verify strict separation of GPT context and human tests
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Checking that no file from test/ except test/CMakeLists.txt is present in GPT context."
+
+            LEAKS="$(
+              find "${GPT_CONTEXT_DIR}/repository/test" \
+                -type f \
+                ! -path "${GPT_CONTEXT_DIR}/repository/test/CMakeLists.txt" \
+                -print 2>/dev/null || true
+            )"
+
+            if [ -n "${LEAKS}" ]; then
+              echo "ERROR: test source or helper leaked into GPT context:"
+              echo "${LEAKS}"
+              exit 1
+            fi
+
+            echo "No human test source or helper is present in GPT context."
+            echo
+
+            echo "Checking explicit forbidden names."
+            if find "${GPT_CONTEXT_DIR}" -type f \
+              \( \
+                -iname "*guidance*test*" \
+                -o -iname "*agricultural*test*" \
+              \) \
+              ! -name "README-GPT-CONTEXT.txt" \
+              -print | grep -q .; then
+              echo "ERROR: a guidance test-like file name is present in GPT context."
+              find "${GPT_CONTEXT_DIR}" -type f \
+                \( \
+                  -iname "*guidance*test*" \
+                  -o -iname "*agricultural*test*" \
+                \) \
+                -print
+              exit 1
+            fi
+
+            echo "Strict separation check passed."
+          } 2>&1 | tee "${PREPARATION_DIR}/evidence/context-separation-check.txt"
+
+      - name: Verify human reference was identified
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            COPIED_LIST="${PREPARATION_DIR}/evidence/human-reference-files-copied.txt"
+            GUIDANCE_REFERENCE_COUNT="$(
+              grep -vE '^(test/CMakeLists.txt|CMakeLists.txt)$' "${COPIED_LIST}" \
+                | sed '/^[[:space:]]*$/d' \
+                | wc -l
+            )"
+
+            echo "Guidance-specific human reference file count: ${GUIDANCE_REFERENCE_COUNT}"
+            echo
+            cat "${COPIED_LIST}"
+
+            if [ "${GUIDANCE_REFERENCE_COUNT}" -eq 0 ]; then
+              echo
+              echo "ERROR: no guidance-specific human test or helper was identified."
+              echo "The candidate detection patterns must be reviewed before using the artifacts."
+              exit 1
+            fi
+          } 2>&1 | tee "${PREPARATION_DIR}/evidence/human-reference-validation.txt"
+
+      - name: Publish preparation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agricultural-guidance-preparation-evidence
+          path: agricultural-guidance-experiment/evidence
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish GPT-5.6 authorized context
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-context-agricultural-guidance
+          path: agricultural-guidance-experiment/gpt-context-agricultural-guidance
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish forbidden human reference
+        uses: actions/upload-artifact@v4
+        with:
+          name: human-reference-agricultural-guidance
+          path: agricultural-guidance-experiment/human-reference-agricultural-guidance
+          if-no-files-found: error
+          retention-days: 30
