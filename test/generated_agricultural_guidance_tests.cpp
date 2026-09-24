@@ -8,20 +8,11 @@
 #include "isobus/isobus/can_general_parameter_group_numbers.hpp"
 #include "isobus/isobus/can_identifier.hpp"
 #include "isobus/isobus/can_message.hpp"
-#include "isobus/isobus/can_message_frame.hpp"
 #include "isobus/isobus/can_network_manager.hpp"
 #include "isobus/isobus/isobus_guidance_interface.hpp"
 
 namespace isobus
 {
-	class TestableAgriculturalGuidanceInterface : public AgriculturalGuidanceInterface
-	{
-	public:
-		using AgriculturalGuidanceInterface::AgriculturalGuidanceInterface;
-		using AgriculturalGuidanceInterface::send_guidance_machine_info;
-		using AgriculturalGuidanceInterface::send_guidance_system_command;
-	};
-
 	class AgriculturalGuidanceTest : public ::testing::Test
 	{
 	protected:
@@ -33,12 +24,12 @@ namespace isobus
 			NAME sourceName(0);
 			sourceName.set_arbitrary_address_capable(true);
 			sourceName.set_industry_group(static_cast<std::uint8_t>(NAME::IndustryGroup::AgriculturalAndForestryEquipment));
-			sourceName.set_device_class(static_cast<std::uint8_t>(NAME::DeviceClass::Tractor));
+			sourceName.set_device_class(static_cast<std::uint8_t>(NAME::DeviceClass::Tractors));
 
 			NAME destName(0);
 			destName.set_arbitrary_address_capable(true);
 			destName.set_industry_group(static_cast<std::uint8_t>(NAME::IndustryGroup::AgriculturalAndForestryEquipment));
-			destName.set_device_class(static_cast<std::uint8_t>(NAME::DeviceClass::Tractor));
+			destName.set_device_class(static_cast<std::uint8_t>(NAME::DeviceClass::Tractors));
 
 			NAME cf1Name(0);
 			cf1Name.set_arbitrary_address_capable(true);
@@ -70,7 +61,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, InitialStateAndInitialize)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
 
 		EXPECT_FALSE(guidanceInterface.get_initialized());
 		EXPECT_EQ(0u, guidanceInterface.get_number_received_guidance_system_command_sources());
@@ -86,7 +77,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, UpdateWithoutInitialize)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
 		// Should execute safely without throwing or asserting when uninitialized
 		guidanceInterface.update();
 		EXPECT_FALSE(guidanceInterface.get_initialized());
@@ -99,7 +90,7 @@ namespace isobus
 	TEST_F(AgriculturalGuidanceTest, SendGuidanceSystemCommandNullSender)
 	{
 		// Listen-only interface (nullptr source ICF)
-		TestableAgriculturalGuidanceInterface guidanceInterface(nullptr, destCF, true, true);
+		AgriculturalGuidanceInterface guidanceInterface(nullptr, destCF, true, true);
 		guidanceInterface.initialize();
 
 		// Should fail to send because transmitter ICF is nullptr
@@ -108,7 +99,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, SendGuidanceSystemCommandNominalAndZeroCurvature)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, true, false);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, true, false);
 		guidanceInterface.initialize();
 
 		// 1. Zero curvature (0.0 km^-1) -> Raw encoding: (0 + 8032) / 0.25 = 32128 (0x7D80)
@@ -155,7 +146,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, SendGuidanceSystemCommandResolutionRounding)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, true, false);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, true, false);
 		guidanceInterface.initialize();
 
 		// Curvature 1.1 km^-1: (1.1 + 8032) / 0.25 = 32132.4
@@ -181,7 +172,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, SendGuidanceSystemCommandClampingLimits)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, true, false);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, true, false);
 		guidanceInterface.initialize();
 
 		// Maximum curvature boundary (> 8031.75 km^-1) -> Raw encoding: 32127 + 32128 = 64255 (0xFBFF)
@@ -230,7 +221,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, SendGuidanceMachineInfoNullSender)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(nullptr, destCF, false, false);
+		AgriculturalGuidanceInterface guidanceInterface(nullptr, destCF, false, false);
 		guidanceInterface.initialize();
 
 		EXPECT_FALSE(guidanceInterface.send_guidance_machine_info());
@@ -238,7 +229,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, SendGuidanceMachineInfoBitfieldPacking)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, true);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, true);
 		guidanceInterface.initialize();
 
 		// Set specific bitfield values:
@@ -309,7 +300,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, ReceiveGuidanceSystemCommandDecodingAndEvents)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
 		guidanceInterface.initialize();
 
 		std::size_t eventCallCount = 0;
@@ -344,13 +335,8 @@ namespace isobus
 			nullptr,
 			0);
 
-		CANMessageFrame frame1{};
-		frame1.channel = 0;
-		frame1.identifier = identifier.get_identifier();
-		frame1.dataLength = 8;
-		std::copy(dataPayload1.begin(), dataPayload1.end(), frame1.data);
-
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame1);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(
+			CANMessageFrame(0, identifier.get_identifier(), dataPayload1.data(), 8));
 
 		// Verify first message created source object
 		EXPECT_EQ(1u, guidanceInterface.get_number_received_guidance_system_command_sources());
@@ -369,7 +355,8 @@ namespace isobus
 		EXPECT_EQ(nullptr, guidanceInterface.get_received_guidance_system_command(1));
 
 		// Repeat identical message -> changed should be false
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame1);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(
+			CANMessageFrame(0, identifier.get_identifier(), dataPayload1.data(), 8));
 
 		EXPECT_EQ(1u, guidanceInterface.get_number_received_guidance_system_command_sources());
 		EXPECT_EQ(2u, eventCallCount);
@@ -377,13 +364,8 @@ namespace isobus
 
 		// Message with modified curvature only: 10.0 km^-1 -> (10.0 + 8032) / 0.25 = 32168 (0x7DA8)
 		std::array<std::uint8_t, 8> dataPayload2 = { 0xA8, 0x7D, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-		CANMessageFrame frame2{};
-		frame2.channel = 0;
-		frame2.identifier = identifier.get_identifier();
-		frame2.dataLength = 8;
-		std::copy(dataPayload2.begin(), dataPayload2.end(), frame2.data);
-
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame2);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(
+			CANMessageFrame(0, identifier.get_identifier(), dataPayload2.data(), 8));
 
 		EXPECT_EQ(3u, eventCallCount);
 		EXPECT_TRUE(eventChangedFlag);
@@ -396,7 +378,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, ReceiveGuidanceMachineInfoBitfieldsAndMultipleSources)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
 		guidanceInterface.initialize();
 
 		std::size_t eventCallCount = 0;
@@ -424,13 +406,8 @@ namespace isobus
 			0xFF,
 			externalCF1->get_address());
 
-		CANMessageFrame frame1{};
-		frame1.channel = 0;
-		frame1.identifier = id1.get_identifier();
-		frame1.dataLength = 8;
-		std::copy(payload1.begin(), payload1.end(), frame1.data);
-
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame1);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(
+			CANMessageFrame(0, id1.get_identifier(), payload1.data(), 8));
 
 		EXPECT_EQ(1u, guidanceInterface.get_number_received_guidance_machine_info_message_sources());
 		EXPECT_EQ(1u, eventCallCount);
@@ -455,13 +432,8 @@ namespace isobus
 			0xFF,
 			externalCF2->get_address());
 
-		CANMessageFrame frame2{};
-		frame2.channel = 0;
-		frame2.identifier = id2.get_identifier();
-		frame2.dataLength = 8;
-		std::copy(payload1.begin(), payload1.end(), frame2.data);
-
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frame2);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(
+			CANMessageFrame(0, id2.get_identifier(), payload1.data(), 8));
 
 		EXPECT_EQ(2u, guidanceInterface.get_number_received_guidance_machine_info_message_sources());
 		EXPECT_EQ(2u, eventCallCount);
@@ -480,7 +452,7 @@ namespace isobus
 
 	TEST_F(AgriculturalGuidanceTest, ReceiveMalformedAndInvalidMessages)
 	{
-		TestableAgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
+		AgriculturalGuidanceInterface guidanceInterface(srcICF, destCF, false, false);
 		guidanceInterface.initialize();
 
 		// DLC != 8 should be rejected
@@ -492,13 +464,8 @@ namespace isobus
 			0xFF,
 			externalCF1->get_address());
 
-		CANMessageFrame frameShort{};
-		frameShort.channel = 0;
-		frameShort.identifier = id.get_identifier();
-		frameShort.dataLength = 7;
-		std::copy(shortPayload.begin(), shortPayload.end(), frameShort.data);
-
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameShort);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(
+			CANMessageFrame(0, id.get_identifier(), shortPayload.data(), 7));
 
 		EXPECT_EQ(0u, guidanceInterface.get_number_received_guidance_system_command_sources());
 
@@ -511,13 +478,8 @@ namespace isobus
 			externalCF1->get_address());
 
 		std::array<std::uint8_t, 8> validPayload = { 0x80, 0x7D, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
-		CANMessageFrame frameUnhandled{};
-		frameUnhandled.channel = 0;
-		frameUnhandled.identifier = unhandledId.get_identifier();
-		frameUnhandled.dataLength = 8;
-		std::copy(validPayload.begin(), validPayload.end(), frameUnhandled.data);
-
-		CANNetworkManager::CANNetwork.process_receive_can_message_frame(frameUnhandled);
+		CANNetworkManager::CANNetwork.process_receive_can_message_frame(
+			CANMessageFrame(0, unhandledId.get_identifier(), validPayload.data(), 8));
 
 		EXPECT_EQ(0u, guidanceInterface.get_number_received_guidance_system_command_sources());
 		EXPECT_EQ(0u, guidanceInterface.get_number_received_guidance_machine_info_message_sources());
