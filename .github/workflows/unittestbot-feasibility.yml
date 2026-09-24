@@ -1,0 +1,318 @@
+name: UnitTestBot C++ feasibility
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/maintain-power-plus-unittestbot
+    paths:
+      - ".github/workflows/unittestbot-feasibility.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unittestbot-feasibility:
+    name: Check UnitTestBot installation and CMake project
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    env:
+      UTBOT_VERSION: "2024.3.0"
+      UTBOT_WORK_DIR: "${{ github.workspace }}/utbot-feasibility"
+      PROJECT_BUILD_DIR: "${{ github.workspace }}/build-utbot-feasibility"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create feasibility directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          mkdir -p "${UTBOT_WORK_DIR}"
+          mkdir -p "${UTBOT_WORK_DIR}/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted"
+          mkdir -p "${UTBOT_WORK_DIR}/logs"
+
+      - name: Record environment information
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch or tag: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo
+            echo "Operating system:"
+            cat /etc/os-release
+            echo
+            echo "Kernel:"
+            uname -a
+            echo
+            echo "CMake:"
+            cmake --version
+            echo
+            echo "C++ compiler:"
+            c++ --version
+            echo
+            echo "Ninja:"
+            ninja --version
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/environment.txt"
+
+      - name: Verify clean experimental starting point
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Checking the experimental starting point"
+            echo
+
+            if find . -type f -name "generated_maintain_power_tests.cpp" \
+              -not -path "./utbot-feasibility/*" \
+              -print | grep -q .; then
+              echo "ERROR: generated_maintain_power_tests.cpp is already present."
+              find . -type f -name "generated_maintain_power_tests.cpp" \
+                -not -path "./utbot-feasibility/*" \
+                -print
+              exit 1
+            fi
+
+            echo "No generated MaintainPowerInterface test file is present."
+            echo
+
+            if [ ! -f "CMakeLists.txt" ]; then
+              echo "ERROR: root CMakeLists.txt was not found."
+              exit 1
+            fi
+
+            echo "Root CMakeLists.txt found."
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/start-point-check.txt"
+
+      - name: Install feasibility dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            build-essential \
+            ca-certificates \
+            cmake \
+            curl \
+            file \
+            jq \
+            ninja-build \
+            tar \
+            unzip
+
+      - name: Configure project with CMake
+        shell: bash
+        run: |
+          set -o pipefail
+
+          cmake \
+            -S "${GITHUB_WORKSPACE}" \
+            -B "${PROJECT_BUILD_DIR}" \
+            -G Ninja \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            2>&1 | tee "${UTBOT_WORK_DIR}/logs/cmake-configure.txt"
+
+      - name: Verify CMake compilation database
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            COMPILE_COMMANDS="${PROJECT_BUILD_DIR}/compile_commands.json"
+
+            if [ ! -s "${COMPILE_COMMANDS}" ]; then
+              echo "ERROR: compile_commands.json was not generated."
+              exit 1
+            fi
+
+            echo "Compilation database generated:"
+            ls -lh "${COMPILE_COMMANDS}"
+            echo
+
+            echo "Number of compilation commands:"
+            jq length "${COMPILE_COMMANDS}"
+            echo
+
+            echo "MaintainPowerInterface entries:"
+            jq -r \
+              '.[] | select(.file | contains("isobus_maintain_power_interface.cpp")) | .file' \
+              "${COMPILE_COMMANDS}"
+
+            MATCH_COUNT="$(
+              jq \
+                '[.[] | select(.file | contains("isobus_maintain_power_interface.cpp"))] | length' \
+                "${COMPILE_COMMANDS}"
+            )"
+
+            echo
+            echo "Matching entry count: ${MATCH_COUNT}"
+
+            if [ "${MATCH_COUNT}" -eq 0 ]; then
+              echo "ERROR: MaintainPowerInterface was not found in compile_commands.json."
+              exit 1
+            fi
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/compile-commands-check.txt"
+
+      - name: Query UnitTestBot release information
+        shell: bash
+        run: |
+          set -o pipefail
+
+          RELEASE_API_URL="https://api.github.com/repos/UnitTestBot/UTBotCpp/releases/tags/${UTBOT_VERSION}"
+          RELEASE_JSON="${UTBOT_WORK_DIR}/release/release-${UTBOT_VERSION}.json"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${RELEASE_API_URL}" \
+            --output "${RELEASE_JSON}"
+
+          {
+            echo "UnitTestBot release:"
+            jq -r '.name, .tag_name, .published_at, .html_url' "${RELEASE_JSON}"
+            echo
+            echo "Published assets:"
+            jq -r '.assets[] | [.name, .size, .browser_download_url] | @tsv' \
+              "${RELEASE_JSON}"
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-release-assets.txt"
+
+      - name: Download UnitTestBot release assets
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          RELEASE_JSON="${UTBOT_WORK_DIR}/release/release-${UTBOT_VERSION}.json"
+
+          jq -r '.assets[] | [.name, .browser_download_url] | @tsv' \
+            "${RELEASE_JSON}" |
+          while IFS=$'\t' read -r ASSET_NAME ASSET_URL; do
+            echo "Downloading ${ASSET_NAME}"
+
+            curl \
+              --fail \
+              --location \
+              --retry 3 \
+              --retry-delay 5 \
+              "${ASSET_URL}" \
+              --output "${UTBOT_WORK_DIR}/release/${ASSET_NAME}"
+          done
+
+          find "${UTBOT_WORK_DIR}/release" \
+            -maxdepth 1 \
+            -type f \
+            -printf '%f\t%s bytes\n' \
+            | sort \
+            | tee "${UTBOT_WORK_DIR}/logs/downloaded-assets.txt"
+
+      - name: Extract UnitTestBot archives
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            shopt -s nullglob
+
+            EXTRACTED_ANY=0
+
+            for ARCHIVE in "${UTBOT_WORK_DIR}"/release/*.zip; do
+              EXTRACTED_ANY=1
+              ARCHIVE_NAME="$(basename "${ARCHIVE}" .zip)"
+              DESTINATION="${UTBOT_WORK_DIR}/extracted/${ARCHIVE_NAME}"
+
+              mkdir -p "${DESTINATION}"
+              echo "Extracting ZIP archive: ${ARCHIVE}"
+              unzip -q "${ARCHIVE}" -d "${DESTINATION}"
+            done
+
+            for ARCHIVE in \
+              "${UTBOT_WORK_DIR}"/release/*.tar.gz \
+              "${UTBOT_WORK_DIR}"/release/*.tgz; do
+              EXTRACTED_ANY=1
+              ARCHIVE_NAME="$(basename "${ARCHIVE}")"
+              DESTINATION="${UTBOT_WORK_DIR}/extracted/${ARCHIVE_NAME}"
+
+              mkdir -p "${DESTINATION}"
+              echo "Extracting TAR archive: ${ARCHIVE}"
+              tar -xzf "${ARCHIVE}" -C "${DESTINATION}"
+            done
+
+            if [ "${EXTRACTED_ANY}" -eq 0 ]; then
+              echo "ERROR: no ZIP or TAR archive was found in the release assets."
+              exit 1
+            fi
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/archive-extraction.txt"
+
+      - name: Inspect extracted UnitTestBot distribution
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Extracted files:"
+            find "${UTBOT_WORK_DIR}/extracted" \
+              -maxdepth 6 \
+              -type f \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+            echo
+
+            echo "Shell scripts:"
+            find "${UTBOT_WORK_DIR}/extracted" \
+              -type f \
+              -name "*.sh" \
+              -print \
+              | sort
+            echo
+
+            echo "Executable files:"
+            find "${UTBOT_WORK_DIR}/extracted" \
+              -type f \
+              -executable \
+              -print \
+              | sort
+            echo
+
+            echo "Files whose names contain utbot:"
+            find "${UTBOT_WORK_DIR}/extracted" \
+              -type f \
+              -iname "*utbot*" \
+              -print \
+              | sort
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-distribution-inventory.txt"
+
+      - name: Preserve CMake compilation database
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "${PROJECT_BUILD_DIR}/compile_commands.json" ]; then
+            cp \
+              "${PROJECT_BUILD_DIR}/compile_commands.json" \
+              "${UTBOT_WORK_DIR}/logs/compile_commands.json"
+          fi
+
+      - name: Upload UnitTestBot feasibility evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittestbot-feasibility-evidence
+          path: |
+            utbot-feasibility/logs
+            utbot-feasibility/release/*.json
+          if-no-files-found: warn
+          retention-days: 30
