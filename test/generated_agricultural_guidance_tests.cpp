@@ -295,7 +295,7 @@ namespace
 		  });
 
 		const std::vector<std::uint8_t> data = {
-			0x7B,
+			0x7F,
 			0x7D,
 			0xFE,
 			0xFF,
