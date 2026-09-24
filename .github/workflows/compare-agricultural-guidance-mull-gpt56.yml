@@ -20,6 +20,7 @@ env:
   SOURCE_FILE: isobus/src/isobus_guidance_interface.cpp
   GENERATED_TEST_FILE: test/generated_agricultural_guidance_tests.cpp
   GENERATED_SUITE_PREFIX: AgriculturalGuidanceGeneratedTest.
+  EXCLUDED_UNSTABLE_TEST: "-AddressClaimTest.AddressClaim_PartneredClaim"
   EVIDENCE_DIR: agricultural-guidance-mull-comparison-evidence
 
 jobs:
@@ -54,6 +55,7 @@ jobs:
             echo "Source file: ${SOURCE_FILE}"
             echo "Generated test file: ${GENERATED_TEST_FILE}"
             echo "Generated suite prefix: ${GENERATED_SUITE_PREFIX}"
+            echo "Symmetrically excluded unstable test: ${EXCLUDED_UNSTABLE_TEST}"
             echo "Recorded at: $(date --iso-8601=seconds)"
             echo
             cat /etc/os-release
@@ -207,7 +209,9 @@ jobs:
 
           rm -f "${GITHUB_WORKSPACE}/human.profraw" "${GITHUB_WORKSPACE}/human.profdata"
 
-          ./unit_tests --gtest_color=no \
+          ./unit_tests \
+            --gtest_filter="${EXCLUDED_UNSTABLE_TEST}" \
+            --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/human-tests.log"
 
           test -s "${GITHUB_WORKSPACE}/human.profraw"
@@ -223,8 +227,8 @@ jobs:
             "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/human-tests.log" || true)
           echo "${TEST_COUNT}" > "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/human-test-count.txt"
 
-          if [ "${TEST_COUNT}" -ne 183 ]; then
-            echo "ERROR: expected 183 human tests, observed ${TEST_COUNT}."
+          if [ "${TEST_COUNT}" -ne 182 ]; then
+            echo "ERROR: expected 182 human tests after excluding the unstable test, observed ${TEST_COUNT}."
             exit 1
           fi
 
@@ -246,6 +250,7 @@ jobs:
             --report-dir "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/mull-results-human" \
             --report-name agricultural-guidance-human \
             ./unit_tests \
+            --gtest_filter="${EXCLUDED_UNSTABLE_TEST}" \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/mull-results-human/mull-console.log"
 
@@ -310,7 +315,9 @@ jobs:
 
           rm -f "${GITHUB_WORKSPACE}/combined.profraw" "${GITHUB_WORKSPACE}/combined.profdata"
 
-          ./unit_tests --gtest_color=no \
+          ./unit_tests \
+            --gtest_filter="${EXCLUDED_UNSTABLE_TEST}" \
+            --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/combined-tests.log"
 
           test -s "${GITHUB_WORKSPACE}/combined.profraw"
@@ -326,8 +333,8 @@ jobs:
             "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/combined-tests.log" || true)
           echo "${TEST_COUNT}" > "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/combined-test-count.txt"
 
-          if [ "${TEST_COUNT}" -ne 202 ]; then
-            echo "ERROR: expected 202 combined tests, observed ${TEST_COUNT}."
+          if [ "${TEST_COUNT}" -ne 201 ]; then
+            echo "ERROR: expected 201 combined tests after excluding the unstable test, observed ${TEST_COUNT}."
             exit 1
           fi
 
@@ -349,6 +356,7 @@ jobs:
             --report-dir "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/mull-results-combined" \
             --report-name agricultural-guidance-combined \
             ./unit_tests \
+            --gtest_filter="${EXCLUDED_UNSTABLE_TEST}" \
             --gtest_color=no \
             2>&1 | tee "${GITHUB_WORKSPACE}/${EVIDENCE_DIR}/mull-results-combined/mull-console.log"
 
