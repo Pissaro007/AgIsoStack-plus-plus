@@ -47,6 +47,10 @@ namespace isobus
 			internalSender = CANNetworkManager::CANNetwork.create_internal_control_function(nameSender, 0, 0);
 			externalDest = std::make_shared<ControlFunction>(nameDest, 0x20, 0);
 			externalRxSource = std::make_shared<ControlFunction>(nameRx, 0x30, 0);
+
+			// Perform address claim procedure for internalSender to reach State::AddressClaimed
+			internalSender->address_claim();
+			CANNetworkManager::CANNetwork.update();
 		}
 
 		std::shared_ptr<InternalControlFunction> internalSender;
@@ -158,9 +162,8 @@ namespace isobus
 			callbackCount++;
 		});
 
-		// 0.25 km-1 per bit, -8032 km-1 offset
-		// raw 32128 -> 0 km-1
-		// byte 2 -> status: IntendedToSteer (1) | 0xFC = 0xFD
+		// Data byte 0 = 0x00, byte 1 = 0x7D -> raw uint16 = 0x7D00 = 32000
+		// Decoding formula: (raw * resolution) - offset = (32000 * 0.25) - 8032 = 8000 - 8032 = -32.0 km-1
 		std::array<std::uint8_t, 8> data = { 0x00, 0x7D, 0xFD, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF };
 
 		CANIdentifier id(CANIdentifier::Type::Extended,
@@ -177,7 +180,7 @@ namespace isobus
 		EXPECT_EQ(1u, callbackCount);
 		EXPECT_TRUE(eventChanged);
 		ASSERT_NE(nullptr, eventCommand);
-		EXPECT_FLOAT_EQ(0.0f, eventCommand->get_curvature());
+		EXPECT_FLOAT_EQ(-32.0f, eventCommand->get_curvature());
 		EXPECT_EQ(AgriculturalGuidanceInterface::GuidanceSystemCommand::CurvatureCommandStatus::IntendedToSteer, eventCommand->get_status());
 
 		std::shared_ptr<AgriculturalGuidanceInterface::GuidanceSystemCommand> retrieved = interface.get_received_guidance_system_command(0);
@@ -206,10 +209,8 @@ namespace isobus
 			callbackCount++;
 		});
 
-		// raw 32132 = 0x7D04 -> (32132 * 0.25) - 8032 = +1.0 km-1
-		// byte 2: lockout=Active(1), readiness=EnabledOnActive(1)<<2, inputPos=DisabledOffPassive(0)<<4, resetReq=ResetNotRequired(0)<<6 => 0x01 | 0x04 = 0x05
-		// byte 3: limitStatus=LimitedHigh(2) << 5 => 0x40
-		// byte 4: exitCode=OperatorOverrideOfFunction(3) & 0x3F | remoteSwitch=EnabledOnActive(1)<<6 => 0x03 | 0x40 = 0x43
+		// Data byte 0 = 0x04, byte 1 = 0x7D -> raw uint16 = 0x7D04 = 32004
+		// Decoding formula: (raw * resolution) - offset = (32004 * 0.25) - 8032 = 8001 - 8032 = -31.0 km-1
 		std::array<std::uint8_t, 8> data = { 0x04, 0x7D, 0x05, 0x40, 0x43, 0xFF, 0xFF, 0xFF };
 
 		CANIdentifier id(CANIdentifier::Type::Extended,
@@ -226,7 +227,7 @@ namespace isobus
 		EXPECT_EQ(1u, callbackCount);
 		EXPECT_TRUE(eventChanged);
 		ASSERT_NE(nullptr, eventInfo);
-		EXPECT_FLOAT_EQ(1.0f, eventInfo->get_estimated_curvature());
+		EXPECT_FLOAT_EQ(-31.0f, eventInfo->get_estimated_curvature());
 		EXPECT_EQ(AgriculturalGuidanceInterface::GuidanceMachineInfo::MechanicalSystemLockout::Active, eventInfo->get_mechanical_system_lockout());
 		EXPECT_EQ(AgriculturalGuidanceInterface::GuidanceMachineInfo::GenericSAEbs02SlotValue::EnabledOnActive, eventInfo->get_guidance_steering_system_readiness_state());
 		EXPECT_EQ(AgriculturalGuidanceInterface::GuidanceMachineInfo::GenericSAEbs02SlotValue::DisabledOffPassive, eventInfo->get_guidance_steering_input_position_status());
@@ -281,9 +282,10 @@ namespace isobus
 		interface.guidanceSystemCommandTransmitData.set_curvature(0.0f);
 		interface.guidanceSystemCommandTransmitData.set_status(AgriculturalGuidanceInterface::GuidanceSystemCommand::CurvatureCommandStatus::IntendedToSteer);
 
-		EXPECT_TRUE(interface.send_guidance_system_command());
-		EXPECT_TRUE(messageTransmitted);
-		EXPECT_EQ(8u, sentMessage.get_data_length());
+		ASSERT_TRUE(interface.send_guidance_system_command());
+		CANNetworkManager::CANNetwork.update();
+		ASSERT_TRUE(messageTransmitted);
+		ASSERT_EQ(8u, sentMessage.get_data_length());
 		EXPECT_EQ(32128, sentMessage.get_uint16_at(0));
 		EXPECT_EQ(0xFD, sentMessage.get_uint8_at(2)); // IntendedToSteer (1) | 0xFC
 
@@ -291,8 +293,10 @@ namespace isobus
 		messageTransmitted = false;
 		interface.guidanceMachineInfoTransmitData.set_estimated_curvature(9000.0f);
 		interface.guidanceSystemCommandTransmitData.set_curvature(9000.0f);
-		EXPECT_TRUE(interface.send_guidance_system_command());
-		EXPECT_TRUE(messageTransmitted);
+		ASSERT_TRUE(interface.send_guidance_system_command());
+		CANNetworkManager::CANNetwork.update();
+		ASSERT_TRUE(messageTransmitted);
+		ASSERT_EQ(8u, sentMessage.get_data_length());
 		EXPECT_EQ(32127 + 32128, sentMessage.get_uint16_at(0));
 
 		// Reset estimated curvature
@@ -301,8 +305,10 @@ namespace isobus
 		// 3. Min clamping
 		messageTransmitted = false;
 		interface.guidanceSystemCommandTransmitData.set_curvature(-9000.0f);
-		EXPECT_TRUE(interface.send_guidance_system_command());
-		EXPECT_TRUE(messageTransmitted);
+		ASSERT_TRUE(interface.send_guidance_system_command());
+		CANNetworkManager::CANNetwork.update();
+		ASSERT_TRUE(messageTransmitted);
+		ASSERT_EQ(8u, sentMessage.get_data_length());
 		EXPECT_EQ(0, sentMessage.get_uint16_at(0));
 	}
 
@@ -330,9 +336,10 @@ namespace isobus
 		interface.guidanceMachineInfoTransmitData.set_guidance_system_command_exit_reason_code(static_cast<std::uint8_t>(AgriculturalGuidanceInterface::GuidanceMachineInfo::GuidanceSystemCommandExitReasonCode::OperatorOverrideOfFunction));
 		interface.guidanceMachineInfoTransmitData.set_guidance_system_remote_engage_switch_status(AgriculturalGuidanceInterface::GuidanceMachineInfo::GenericSAEbs02SlotValue::EnabledOnActive);
 
-		EXPECT_TRUE(interface.send_guidance_machine_info());
-		EXPECT_TRUE(messageTransmitted);
-		EXPECT_EQ(8u, sentMessage.get_data_length());
+		ASSERT_TRUE(interface.send_guidance_machine_info());
+		CANNetworkManager::CANNetwork.update();
+		ASSERT_TRUE(messageTransmitted);
+		ASSERT_EQ(8u, sentMessage.get_data_length());
 		EXPECT_EQ(32132, sentMessage.get_uint16_at(0));
 		EXPECT_EQ(0x05, sentMessage.get_uint8_at(2));
 		EXPECT_EQ(0x40, sentMessage.get_uint8_at(3));
@@ -341,8 +348,10 @@ namespace isobus
 		// Min clamping
 		messageTransmitted = false;
 		interface.guidanceMachineInfoTransmitData.set_estimated_curvature(-9000.0f);
-		EXPECT_TRUE(interface.send_guidance_machine_info());
-		EXPECT_TRUE(messageTransmitted);
+		ASSERT_TRUE(interface.send_guidance_machine_info());
+		CANNetworkManager::CANNetwork.update();
+		ASSERT_TRUE(messageTransmitted);
+		ASSERT_EQ(8u, sentMessage.get_data_length());
 		EXPECT_EQ(0, sentMessage.get_uint16_at(0));
 	}
 
@@ -369,6 +378,7 @@ namespace isobus
 		});
 
 		TestableAgriculturalGuidanceInterface::process_flags(static_cast<std::uint32_t>(TestableAgriculturalGuidanceInterface::TransmitFlags::SendGuidanceSystemCommand), &interface);
+		CANNetworkManager::CANNetwork.update();
 		EXPECT_TRUE(messageTransmitted);
 
 		messageTransmitted = false;
@@ -381,6 +391,7 @@ namespace isobus
 		});
 
 		TestableAgriculturalGuidanceInterface::process_flags(static_cast<std::uint32_t>(TestableAgriculturalGuidanceInterface::TransmitFlags::SendGuidanceMachineInfo), &interface);
+		CANNetworkManager::CANNetwork.update();
 		EXPECT_TRUE(messageTransmitted);
 
 		TestableAgriculturalGuidanceInterface::process_flags(999, &interface);
