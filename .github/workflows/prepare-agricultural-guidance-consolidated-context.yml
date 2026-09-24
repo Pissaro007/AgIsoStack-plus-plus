@@ -1,0 +1,261 @@
+name: Prepare consolidated AgriculturalGuidanceInterface GPT context
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/agricultural-guidance-plus-gpt56
+    paths:
+      - ".github/workflows/prepare-agricultural-guidance-consolidated-context.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  prepare-consolidated-context:
+    name: Build consolidated GPT-5.6 context
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+
+    env:
+      OUTPUT_DIR: "${{ github.workspace }}/agricultural-guidance-consolidated-context"
+      CONTEXT_FILE: "${{ github.workspace }}/agricultural-guidance-consolidated-context/agricultural-guidance-gpt-context.txt"
+      TARGET_SOURCE: "isobus/src/isobus_guidance_interface.cpp"
+      TARGET_HEADER: "isobus/include/isobus/isobus/isobus_guidance_interface.hpp"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Create output directory
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${OUTPUT_DIR}"
+
+      - name: Verify experimental starting point
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Target source: ${TARGET_SOURCE}"
+            echo "Target header: ${TARGET_HEADER}"
+            echo
+
+            if [ ! -f "${TARGET_SOURCE}" ]; then
+              echo "ERROR: target source was not found: ${TARGET_SOURCE}"
+              exit 1
+            fi
+
+            if [ ! -f "${TARGET_HEADER}" ]; then
+              echo "ERROR: target header was not found: ${TARGET_HEADER}"
+              exit 1
+            fi
+
+            if find test -type f \
+              \( \
+                -name "generated_agricultural_guidance_tests.cpp" \
+                -o -name "generated_guidance_tests.cpp" \
+              \) \
+              -print 2>/dev/null | grep -q .; then
+              echo "ERROR: a generated AgriculturalGuidanceInterface test file already exists."
+              exit 1
+            fi
+
+            echo "Target source and header are present."
+            echo "No generated AgriculturalGuidanceInterface test file is present."
+          } 2>&1 | tee "${OUTPUT_DIR}/consolidated-context-start-point.txt"
+
+      - name: Define and verify authorized context files
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cat > "${OUTPUT_DIR}/authorized-context-files.txt" <<'EOF'
+          isobus/src/isobus_guidance_interface.cpp
+          isobus/include/isobus/isobus/isobus_guidance_interface.hpp
+          isobus/include/isobus/isobus/can_general_parameter_group_numbers.hpp
+          isobus/include/isobus/isobus/can_message.hpp
+          isobus/include/isobus/isobus/can_identifier.hpp
+          isobus/include/isobus/isobus/can_control_function.hpp
+          isobus/include/isobus/isobus/can_internal_control_function.hpp
+          isobus/include/isobus/isobus/can_network_manager.hpp
+          isobus/include/isobus/isobus/can_stack_logger.hpp
+          utility/include/isobus/utility/processing_flags.hpp
+          utility/include/isobus/utility/event_dispatcher.hpp
+          utility/include/isobus/utility/system_timing.hpp
+          utility/include/isobus/utility/time_source.hpp
+          utility/include/isobus/utility/chrono_time_source.hpp
+          isobus/include/isobus/isobus/can_NAME.hpp
+          isobus/include/isobus/isobus/can_NAME_filter.hpp
+          isobus/include/isobus/isobus/can_message_data.hpp
+          isobus/include/isobus/isobus/can_message_frame.hpp
+          CMakeLists.txt
+          test/CMakeLists.txt
+          isobus/CMakeLists.txt
+          utility/CMakeLists.txt
+          EOF
+
+          while IFS= read -r source_path; do
+            [ -n "${source_path}" ] || continue
+
+            if [ ! -f "${source_path}" ]; then
+              echo "ERROR: authorized context file was not found: ${source_path}"
+              exit 1
+            fi
+          done < "${OUTPUT_DIR}/authorized-context-files.txt"
+
+      - name: Build consolidated context file
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          {
+            echo "AGRICULTURAL GUIDANCE INTERFACE CONTROLLED GPT CONTEXT"
+            echo
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Generated at: $(date --iso-8601=seconds)"
+            echo
+            echo "PURPOSE"
+            echo "Generate an independent complementary GoogleTest file for:"
+            echo "test/generated_agricultural_guidance_tests.cpp"
+            echo
+            echo "EXPERIMENTAL RESTRICTIONS"
+            echo "- Do not modify production code."
+            echo "- Do not modify existing human tests."
+            echo "- Do not invent APIs absent from this context."
+            echo "- Do not assume access to repository history or human reference tests."
+            echo "- Do not use helpers from existing tests."
+            echo "- Use GoogleTest and the real production APIs shown below."
+            echo "- Prefer precise behavioral oracles over execution-only assertions."
+            echo
+            echo "REFERENCE FORMAT"
+            echo "Each repository file is enclosed between a FILE marker and an END FILE marker."
+            echo "Treat every section as the repository file whose original path is shown."
+            echo
+          } > "${CONTEXT_FILE}"
+
+          while IFS= read -r source_path; do
+            [ -n "${source_path}" ] || continue
+
+            {
+              echo
+              echo "================================================================================"
+              echo "===== FILE: ${source_path} ====="
+              echo "================================================================================"
+              cat "${source_path}"
+              echo
+              echo "================================================================================"
+              echo "===== END FILE: ${source_path} ====="
+              echo "================================================================================"
+            } >> "${CONTEXT_FILE}"
+          done < "${OUTPUT_DIR}/authorized-context-files.txt"
+
+      - name: Verify strict exclusion of human tests
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            echo "Checking consolidated context for forbidden human reference paths and symbols."
+
+            FORBIDDEN_MATCHES="$(
+              grep -nE \
+                '===== FILE: test/guidance_tests\.cpp =====|===== FILE: .*guidance.*tests.*\.cpp =====|GuidanceInterfaceTest|AgriculturalGuidanceInterfaceTest' \
+                "${CONTEXT_FILE}" \
+                || true
+            )"
+
+            if [ -n "${FORBIDDEN_MATCHES}" ]; then
+              echo "ERROR: forbidden human test material was detected in consolidated context."
+              echo "${FORBIDDEN_MATCHES}"
+              exit 1
+            fi
+
+            if grep -Fxq "test/guidance_tests.cpp" "${OUTPUT_DIR}/authorized-context-files.txt"; then
+              echo "ERROR: test/guidance_tests.cpp appears in the authorized context list."
+              exit 1
+            fi
+
+            echo "No human guidance test source or test-specific fixture was detected."
+            echo "Strict separation check passed."
+          } 2>&1 | tee "${OUTPUT_DIR}/consolidated-context-separation-check.txt"
+
+      - name: Verify consolidated file completeness
+        shell: bash
+        run: |
+          set -o pipefail
+
+          {
+            EXPECTED_COUNT="$(sed '/^[[:space:]]*$/d' "${OUTPUT_DIR}/authorized-context-files.txt" | wc -l)"
+            START_MARKER_COUNT="$(grep -c '^===== FILE: ' "${CONTEXT_FILE}")"
+            END_MARKER_COUNT="$(grep -c '^===== END FILE: ' "${CONTEXT_FILE}")"
+
+            echo "Expected repository files: ${EXPECTED_COUNT}"
+            echo "FILE markers: ${START_MARKER_COUNT}"
+            echo "END FILE markers: ${END_MARKER_COUNT}"
+            echo "Consolidated context bytes: $(wc -c < "${CONTEXT_FILE}")"
+            echo "Consolidated context lines: $(wc -l < "${CONTEXT_FILE}")"
+
+            if [ "${START_MARKER_COUNT}" -ne "${EXPECTED_COUNT}" ]; then
+              echo "ERROR: FILE marker count does not match the authorized file count."
+              exit 1
+            fi
+
+            if [ "${END_MARKER_COUNT}" -ne "${EXPECTED_COUNT}" ]; then
+              echo "ERROR: END FILE marker count does not match the authorized file count."
+              exit 1
+            fi
+
+            if [ ! -s "${CONTEXT_FILE}" ]; then
+              echo "ERROR: consolidated context file is empty."
+              exit 1
+            fi
+
+            echo "Consolidated context completeness check passed."
+          } 2>&1 | tee "${OUTPUT_DIR}/consolidated-context-validation.txt"
+
+      - name: Create hashes and manifest
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          sha256sum "${CONTEXT_FILE}" \
+            > "${OUTPUT_DIR}/agricultural-guidance-gpt-context.sha256.txt"
+
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Context file: agricultural-guidance-gpt-context.txt"
+            echo "Authorized repository file count: $(sed '/^[[:space:]]*$/d' "${OUTPUT_DIR}/authorized-context-files.txt" | wc -l)"
+            echo "Context size in bytes: $(wc -c < "${CONTEXT_FILE}")"
+            echo "Context line count: $(wc -l < "${CONTEXT_FILE}")"
+            echo
+            echo "Forbidden human reference: test/guidance_tests.cpp"
+            echo "The forbidden human reference is not included in the consolidated context."
+          } > "${OUTPUT_DIR}/consolidated-context-manifest.txt"
+
+      - name: Publish consolidated GPT context
+        uses: actions/upload-artifact@v4
+        with:
+          name: gpt-context-agricultural-guidance-consolidated
+          path: |
+            agricultural-guidance-consolidated-context/agricultural-guidance-gpt-context.txt
+            agricultural-guidance-consolidated-context/agricultural-guidance-gpt-context.sha256.txt
+            agricultural-guidance-consolidated-context/authorized-context-files.txt
+            agricultural-guidance-consolidated-context/consolidated-context-manifest.txt
+            agricultural-guidance-consolidated-context/consolidated-context-separation-check.txt
+            agricultural-guidance-consolidated-context/consolidated-context-validation.txt
+            agricultural-guidance-consolidated-context/consolidated-context-start-point.txt
+          if-no-files-found: error
+          retention-days: 30
