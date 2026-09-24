@@ -53,6 +53,7 @@ set(TEST_SRC
     cf_functionalities_tests.cpp
     time_date_tests.cpp
     guidance_tests.cpp
+    generated_agricultural_guidance_tests.cpp
     speed_distance_message_tests.cpp
     maintain_power_tests.cpp
     vt_object_tests.cpp
