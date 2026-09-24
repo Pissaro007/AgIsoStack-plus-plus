@@ -4,6 +4,7 @@ name: Run corrected Gemini agricultural guidance tests
 #ci: rerun Gemini guidance tests after correction 2b
 #ci : re-run human correction
 #ci: rerun Gemini guidance tests after human correction 2
+#ci: rerun Gemini guidance tests with ICF readiness diagnostic
 
 on:
   workflow_dispatch:
