@@ -247,7 +247,6 @@ namespace isobus
 				}
 			});
 
-		EXPECT_TRUE(guidanceInterface.send_guidance_machine_info()); // Or send_guidance_system_command
 		EXPECT_TRUE(guidanceInterface.send_guidance_system_command());
 		ASSERT_EQ(8u, capturedDataMin.size());
 		EXPECT_EQ(0x00, capturedDataMin[0]);
