@@ -1,6 +1,6 @@
 name: Run AgriculturalGuidanceInterface Gemini tests
 
-#rerun #1
+#rerun #2
 
 on:
   workflow_dispatch:
