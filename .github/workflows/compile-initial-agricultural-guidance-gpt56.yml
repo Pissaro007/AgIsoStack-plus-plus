@@ -146,6 +146,7 @@ jobs:
             -B "${BUILD_DIR}" \
             -G Ninja \
             -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTING=ON \
             -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             2>&1 | tee "${EVIDENCE_DIR}/cmake-configure-raw.txt"
 
@@ -154,6 +155,25 @@ jobs:
             | tee "${EVIDENCE_DIR}/cmake-configure-exit-status.txt"
 
           exit "${CONFIGURE_STATUS}"
+
+      - name: Verify unit_tests target exists
+        if: steps.configure.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+
+          cmake --build "${BUILD_DIR}" --target help \
+            2>&1 | tee "${EVIDENCE_DIR}/available-build-targets.txt"
+
+          if ! grep -Eq '(^|[[:space:]])unit_tests($|:|[[:space:]])' \
+            "${EVIDENCE_DIR}/available-build-targets.txt"; then
+            echo "ERROR: unit_tests target was not generated even with BUILD_TESTING=ON." \
+              | tee "${EVIDENCE_DIR}/unit-tests-target-check.txt"
+            exit 1
+          fi
+
+          echo "unit_tests target is available." \
+            | tee "${EVIDENCE_DIR}/unit-tests-target-check.txt"
 
       - name: Compile initial generated tests
         id: compile
