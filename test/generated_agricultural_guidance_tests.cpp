@@ -48,8 +48,6 @@ namespace isobus
 			externalDest = std::make_shared<ControlFunction>(nameDest, 0x20, 0);
 			externalRxSource = std::make_shared<ControlFunction>(nameRx, 0x30, 0);
 
-			// Perform address claim procedure for internalSender to reach State::AddressClaimed
-			internalSender->address_claim();
 			CANNetworkManager::CANNetwork.update();
 		}
 
