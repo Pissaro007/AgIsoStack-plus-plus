@@ -1,0 +1,286 @@
+name: UnitTestBot scripts and CLI inspection
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/maintain-power-plus-unittestbot
+    paths:
+      - ".github/workflows/unittestbot-scripts-cli-inspection.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-unit-test-bot-scripts:
+    name: Inspect UnitTestBot scripts and CLI
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+
+    env:
+      UTBOT_VERSION: "2024.3.0"
+      UTBOT_WORK_DIR: "${{ github.workspace }}/utbot-scripts-cli-inspection"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create inspection directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${UTBOT_WORK_DIR}/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted/distribution"
+          mkdir -p "${UTBOT_WORK_DIR}/logs"
+
+      - name: Record environment information
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch or tag: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo
+            cat /etc/os-release
+            echo
+            uname -a
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/environment.txt"
+
+      - name: Verify clean experimental starting point
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            if find . -type f -name "generated_maintain_power_tests.cpp" \
+              -not -path "./utbot-scripts-cli-inspection/*" \
+              -print | grep -q .; then
+              echo "ERROR: generated_maintain_power_tests.cpp is already present."
+              exit 1
+            fi
+
+            if [ ! -f "CMakeLists.txt" ]; then
+              echo "ERROR: root CMakeLists.txt was not found."
+              exit 1
+            fi
+
+            echo "No generated MaintainPowerInterface test file is present."
+            echo "Root CMakeLists.txt found."
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/start-point-check.txt"
+
+      - name: Install inspection dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            ca-certificates \
+            curl \
+            file \
+            jq \
+            tar \
+            unzip
+
+      - name: Download UnitTestBot release archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          RELEASE_API_URL="https://api.github.com/repos/UnitTestBot/UTBotCpp/releases/tags/${UTBOT_VERSION}"
+          RELEASE_JSON="${UTBOT_WORK_DIR}/release/release-${UTBOT_VERSION}.json"
+          ASSET_NAME="utbot-release-${UTBOT_VERSION}.zip"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${RELEASE_API_URL}" \
+            --output "${RELEASE_JSON}"
+
+          ASSET_URL="$(
+            jq -r \
+              --arg name "${ASSET_NAME}" \
+              '.assets[] | select(.name == $name) | .browser_download_url' \
+              "${RELEASE_JSON}"
+          )"
+
+          if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
+            echo "ERROR: release asset ${ASSET_NAME} was not found."
+            exit 1
+          fi
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            "${ASSET_URL}" \
+            --output "${UTBOT_WORK_DIR}/release/${ASSET_NAME}"
+
+          ls -lh "${UTBOT_WORK_DIR}/release/${ASSET_NAME}" \
+            | tee "${UTBOT_WORK_DIR}/logs/downloaded-asset.txt"
+
+      - name: Extract UnitTestBot distribution
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            OUTER_ARCHIVE="${UTBOT_WORK_DIR}/release/utbot-release-${UTBOT_VERSION}.zip"
+            RELEASE_DIR="${UTBOT_WORK_DIR}/extracted/release"
+            DISTRIBUTION_DIR="${UTBOT_WORK_DIR}/extracted/distribution"
+
+            unzip -q "${OUTER_ARCHIVE}" -d "${RELEASE_DIR}"
+
+            INNER_ARCHIVE="${RELEASE_DIR}/utbot_distr.tar.gz"
+            if [ ! -f "${INNER_ARCHIVE}" ]; then
+              echo "ERROR: utbot_distr.tar.gz was not found."
+              exit 1
+            fi
+
+            tar -xzf "${INNER_ARCHIVE}" -C "${DISTRIBUTION_DIR}"
+
+            UTBOT_ROOT="${DISTRIBUTION_DIR}/utbot_distr"
+            if [ ! -d "${UTBOT_ROOT}" ]; then
+              echo "ERROR: extracted utbot_distr directory was not found."
+              exit 1
+            fi
+
+            echo "UnitTestBot distribution extracted to:"
+            echo "${UTBOT_ROOT}"
+            echo
+            du -sh "${UTBOT_ROOT}"
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/distribution-extraction.txt"
+
+      - name: Record internal UnitTestBot scripts
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+
+            for RELATIVE_PATH in \
+              "utbot_server_restart.sh" \
+              "utbot_run_system.sh" \
+              "utbot_online_cli.sh" \
+              "utbot_scripts/common_functions.sh"; do
+              SCRIPT="${UTBOT_ROOT}/${RELATIVE_PATH}"
+
+              echo "===== ${RELATIVE_PATH} ====="
+              if [ -f "${SCRIPT}" ]; then
+                sed -n '1,400p' "${SCRIPT}"
+              else
+                echo "ERROR: script not found: ${SCRIPT}"
+              fi
+              echo
+            done
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-internal-scripts.txt"
+
+      - name: Preserve each UnitTestBot script separately
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+
+          cp "${UTBOT_ROOT}/utbot_server_restart.sh" \
+            "${UTBOT_WORK_DIR}/logs/utbot_server_restart.sh.txt"
+          cp "${UTBOT_ROOT}/utbot_run_system.sh" \
+            "${UTBOT_WORK_DIR}/logs/utbot_run_system.sh.txt"
+          cp "${UTBOT_ROOT}/utbot_online_cli.sh" \
+            "${UTBOT_WORK_DIR}/logs/utbot_online_cli.sh.txt"
+          cp "${UTBOT_ROOT}/utbot_scripts/common_functions.sh" \
+            "${UTBOT_WORK_DIR}/logs/common_functions.sh.txt"
+
+      - name: Search scripts for environment and launch settings
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+
+            echo "Relevant script lines:"
+            grep -RInE \
+              'LD_LIBRARY_PATH|libz3|tcmalloc|server-install/utbot|utbot_online_cli|port|PORT|localhost|127\.0\.0\.1|grpc|nohup|start-stop-daemon|--help|--version|project|build|cmake|compile_commands' \
+              "${UTBOT_ROOT}/utbot_server_restart.sh" \
+              "${UTBOT_ROOT}/utbot_run_system.sh" \
+              "${UTBOT_ROOT}/utbot_online_cli.sh" \
+              "${UTBOT_ROOT}/utbot_scripts" \
+              || true
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-script-settings.txt"
+
+      - name: Locate bundled libraries required by UnitTestBot
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+
+            echo "Bundled Z3 and tcmalloc libraries:"
+            find "${UTBOT_ROOT}" \
+              -type f \
+              \( \
+                -name 'libz3.so*' \
+                -o -name 'libtcmalloc.so*' \
+                -o -name 'libbfd-2.34-system.so*' \
+                -o -name 'libopcodes-2.34-system.so*' \
+                -o -name 'libisl.so.22*' \
+              \) \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/bundled-libraries.txt"
+
+      - name: Inspect UnitTestBot server executable
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+            SERVER="${UTBOT_ROOT}/server-install/utbot"
+
+            if [ ! -x "${SERVER}" ]; then
+              echo "ERROR: UnitTestBot server executable was not found or is not executable."
+              exit 1
+            fi
+
+            echo "Executable information:"
+            file "${SERVER}"
+            echo
+            echo "Direct shared-library resolution:"
+            ldd "${SERVER}" || true
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/utbot-server-executable.txt"
+
+      - name: Identify explicit help or version commands
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+
+            echo "This step does not start the server or generate tests."
+            echo "It records only help or version invocations explicitly present in the supplied scripts."
+            echo
+
+            grep -RInE -- \
+              '(^|[[:space:]])[^#]*(--help|-h|--version|version)([[:space:]]|$)' \
+              "${UTBOT_ROOT}/utbot_server_restart.sh" \
+              "${UTBOT_ROOT}/utbot_run_system.sh" \
+              "${UTBOT_ROOT}/utbot_online_cli.sh" \
+              "${UTBOT_ROOT}/utbot_scripts" \
+              || true
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/logs/explicit-help-version-commands.txt"
+
+      - name: Upload UnitTestBot script inspection evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittestbot-scripts-cli-inspection-evidence
+          path: |
+            utbot-scripts-cli-inspection/logs
+            utbot-scripts-cli-inspection/release/*.json
+          if-no-files-found: warn
+          retention-days: 30
