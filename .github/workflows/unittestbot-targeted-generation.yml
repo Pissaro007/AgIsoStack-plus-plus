@@ -1,0 +1,556 @@
+name: UnitTestBot targeted generation feasibility
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/maintain-power-plus-unittestbot
+    paths:
+      - ".github/workflows/unittestbot-targeted-generation.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit-test-bot-targeted-generation:
+    name: Generate tests for MaintainPowerInterface
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    env:
+      UTBOT_VERSION: "2024.3.0"
+      UTBOT_PORT: "2121"
+      UTBOT_WORK_DIR: "${{ github.workspace }}/utbot-targeted-generation"
+      TARGET_SOURCE: "${{ github.workspace }}/isobus/src/isobus_maintain_power_interface.cpp"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create evidence directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${UTBOT_WORK_DIR}/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted/distribution"
+          mkdir -p "${UTBOT_WORK_DIR}/evidence/before"
+          mkdir -p "${UTBOT_WORK_DIR}/evidence/after"
+          mkdir -p "${UTBOT_WORK_DIR}/evidence/generated-files"
+
+      - name: Record environment and experiment identity
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch or tag: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "UnitTestBot version: ${UTBOT_VERSION}"
+            echo "UnitTestBot port: ${UTBOT_PORT}"
+            echo "Project path: ${GITHUB_WORKSPACE}"
+            echo "Target source: ${TARGET_SOURCE}"
+            echo
+            cat /etc/os-release
+            echo
+            uname -a
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/environment.txt"
+
+      - name: Verify clean experimental starting point
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            if [ ! -f "${TARGET_SOURCE}" ]; then
+              echo "ERROR: target source file was not found: ${TARGET_SOURCE}"
+              exit 1
+            fi
+
+            if [ ! -f "${GITHUB_WORKSPACE}/CMakeLists.txt" ]; then
+              echo "ERROR: root CMakeLists.txt was not found."
+              exit 1
+            fi
+
+            if find "${GITHUB_WORKSPACE}" \
+              -type f \
+              -name "generated_maintain_power_tests.cpp" \
+              -not -path "${UTBOT_WORK_DIR}/*" \
+              -print | grep -q .; then
+              echo "ERROR: generated_maintain_power_tests.cpp is already present."
+              exit 1
+            fi
+
+            if [ -e "${GITHUB_WORKSPACE}/build" ]; then
+              echo "ERROR: a root build path already exists before generation."
+              ls -ld "${GITHUB_WORKSPACE}/build"
+              exit 1
+            fi
+
+            echo "Target source found."
+            echo "Root CMakeLists.txt found."
+            echo "No generated MaintainPowerInterface test file is present."
+            echo "No root build path is present."
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/start-point-check.txt"
+
+      - name: Record repository state before generation
+        shell: bash
+        run: |
+          set -o pipefail
+
+          git status --short --untracked-files=all \
+            > "${UTBOT_WORK_DIR}/evidence/before/git-status.txt"
+
+          git ls-files -s \
+            > "${UTBOT_WORK_DIR}/evidence/before/git-index.txt"
+
+          find "${GITHUB_WORKSPACE}" \
+            -path "${UTBOT_WORK_DIR}" -prune \
+            -o -type f \
+            -printf '%P\t%s\t%T@\n' \
+            | sort \
+            > "${UTBOT_WORK_DIR}/evidence/before/file-inventory.txt"
+
+          sha256sum "${TARGET_SOURCE}" \
+            > "${UTBOT_WORK_DIR}/evidence/before/target-source.sha256"
+
+      - name: Install generation dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ca-certificates \
+            curl \
+            file \
+            jq \
+            lsb-release \
+            netcat-openbsd \
+            procps \
+            tar \
+            unzip
+
+      - name: Download UnitTestBot release archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          RELEASE_API_URL="https://api.github.com/repos/UnitTestBot/UTBotCpp/releases/tags/${UTBOT_VERSION}"
+          RELEASE_JSON="${UTBOT_WORK_DIR}/release/release-${UTBOT_VERSION}.json"
+          ASSET_NAME="utbot-release-${UTBOT_VERSION}.zip"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${RELEASE_API_URL}" \
+            --output "${RELEASE_JSON}"
+
+          ASSET_URL="$(
+            jq -r \
+              --arg name "${ASSET_NAME}" \
+              '.assets[] | select(.name == $name) | .browser_download_url' \
+              "${RELEASE_JSON}"
+          )"
+
+          if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
+            echo "ERROR: release asset ${ASSET_NAME} was not found."
+            exit 1
+          fi
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            "${ASSET_URL}" \
+            --output "${UTBOT_WORK_DIR}/release/${ASSET_NAME}"
+
+          ls -lh "${UTBOT_WORK_DIR}/release/${ASSET_NAME}" \
+            | tee "${UTBOT_WORK_DIR}/evidence/downloaded-asset.txt"
+
+      - name: Extract UnitTestBot distribution
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            OUTER_ARCHIVE="${UTBOT_WORK_DIR}/release/utbot-release-${UTBOT_VERSION}.zip"
+            RELEASE_DIR="${UTBOT_WORK_DIR}/extracted/release"
+            DISTRIBUTION_DIR="${UTBOT_WORK_DIR}/extracted/distribution"
+
+            unzip -q "${OUTER_ARCHIVE}" -d "${RELEASE_DIR}"
+
+            INNER_ARCHIVE="${RELEASE_DIR}/utbot_distr.tar.gz"
+            if [ ! -f "${INNER_ARCHIVE}" ]; then
+              echo "ERROR: utbot_distr.tar.gz was not found."
+              exit 1
+            fi
+
+            tar -xzf "${INNER_ARCHIVE}" -C "${DISTRIBUTION_DIR}"
+
+            UTBOT_ROOT="${DISTRIBUTION_DIR}/utbot_distr"
+            if [ ! -d "${UTBOT_ROOT}" ]; then
+              echo "ERROR: extracted utbot_distr directory was not found."
+              exit 1
+            fi
+
+            chmod +x \
+              "${UTBOT_ROOT}/utbot_server_restart.sh" \
+              "${UTBOT_ROOT}/utbot_run_system.sh" \
+              "${UTBOT_ROOT}/utbot_online_cli.sh"
+
+            echo "UnitTestBot distribution extracted to: ${UTBOT_ROOT}"
+            du -sh "${UTBOT_ROOT}"
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/distribution-extraction.txt"
+
+      - name: Verify UnitTestBot runtime libraries
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+            export LD_LIBRARY_PATH="${UTBOT_ROOT}/install/lib:${UTBOT_ROOT}/debs-install/lib/x86_64-linux-gnu:${UTBOT_ROOT}/debs-install/usr/lib/x86_64-linux-gnu:${UTBOT_ROOT}/debs-install/usr/local/lib:${UTBOT_ROOT}/debs-install/lib:${UTBOT_ROOT}/debs-install/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+            ldd "${UTBOT_ROOT}/server-install/utbot"
+
+            if ldd "${UTBOT_ROOT}/server-install/utbot" | grep -q "not found"; then
+              echo "ERROR: unresolved UnitTestBot server libraries remain."
+              exit 1
+            fi
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/runtime-library-check.txt"
+
+      - name: Start UnitTestBot server
+        shell: bash
+        run: |
+          set -o pipefail
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+
+          {
+            if nc -z 127.0.0.1 "${UTBOT_PORT}"; then
+              echo "ERROR: port ${UTBOT_PORT} is already listening."
+              exit 1
+            fi
+
+            cd "${UTBOT_ROOT}"
+            timeout 20s ./utbot_server_restart.sh "${UTBOT_PORT}"
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/server-startup.txt"
+
+      - name: Verify UnitTestBot server readiness
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+            PID_FILE="${UTBOT_ROOT}/server-install/utbot.pid"
+            PROCESS_READY=0
+            PORT_READY=0
+
+            for ATTEMPT in $(seq 1 15); do
+              echo "Readiness attempt ${ATTEMPT}/15"
+
+              if [ -s "${PID_FILE}" ]; then
+                SERVER_PID="$(cat "${PID_FILE}")"
+                if kill -0 "${SERVER_PID}" 2>/dev/null; then
+                  PROCESS_READY=1
+                fi
+              fi
+
+              if nc -z 127.0.0.1 "${UTBOT_PORT}"; then
+                PORT_READY=1
+              fi
+
+              if [ "${PROCESS_READY}" -eq 1 ] && [ "${PORT_READY}" -eq 1 ]; then
+                break
+              fi
+
+              sleep 2
+            done
+
+            echo "Process ready: ${PROCESS_READY}"
+            echo "Port ready: ${PORT_READY}"
+            ps aux | grep "[u]tbot.*server" || true
+            ss -ltnp | grep ":${UTBOT_PORT}" || true
+
+            if [ "${PROCESS_READY}" -ne 1 ] || [ "${PORT_READY}" -ne 1 ]; then
+              echo "ERROR: UnitTestBot server readiness validation failed."
+              exit 1
+            fi
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/server-readiness.txt"
+
+      - name: Run first autonomous targeted generation
+        id: generation
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+          GENERATION_LOG="${UTBOT_WORK_DIR}/evidence/generation-raw-output.txt"
+          STATUS_FILE="${UTBOT_WORK_DIR}/evidence/generation-exit-status.txt"
+
+          set +e
+          cd "${UTBOT_ROOT}"
+
+          timeout --signal=TERM --kill-after=30s 20m \
+            ./utbot_online_cli.sh \
+            generate \
+            "${GITHUB_WORKSPACE}" \
+            "${TARGET_SOURCE}" \
+            2>&1 | tee "${GENERATION_LOG}"
+
+          GENERATION_STATUS=${PIPESTATUS[0]}
+          set -e
+
+          echo "${GENERATION_STATUS}" | tee "${STATUS_FILE}"
+
+          if [ "${GENERATION_STATUS}" -eq 124 ] || [ "${GENERATION_STATUS}" -eq 137 ]; then
+            echo "UnitTestBot generation reached the configured timeout." \
+              | tee -a "${GENERATION_LOG}"
+          fi
+
+          exit "${GENERATION_STATUS}"
+
+      - name: Record repository state after generation
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          git status --short --untracked-files=all \
+            > "${UTBOT_WORK_DIR}/evidence/after/git-status.txt"
+
+          git diff --binary \
+            > "${UTBOT_WORK_DIR}/evidence/after/tracked-changes.patch"
+
+          git diff --name-status \
+            > "${UTBOT_WORK_DIR}/evidence/after/tracked-name-status.txt"
+
+          find "${GITHUB_WORKSPACE}" \
+            -path "${UTBOT_WORK_DIR}" -prune \
+            -o -type f \
+            -printf '%P\t%s\t%T@\n' \
+            | sort \
+            > "${UTBOT_WORK_DIR}/evidence/after/file-inventory.txt"
+
+          comm -13 \
+            "${UTBOT_WORK_DIR}/evidence/before/file-inventory.txt" \
+            "${UTBOT_WORK_DIR}/evidence/after/file-inventory.txt" \
+            > "${UTBOT_WORK_DIR}/evidence/after/new-or-changed-inventory-lines.txt" \
+            || true
+
+          sha256sum "${TARGET_SOURCE}" \
+            > "${UTBOT_WORK_DIR}/evidence/after/target-source.sha256"
+
+          if ! cmp -s \
+            "${UTBOT_WORK_DIR}/evidence/before/target-source.sha256" \
+            "${UTBOT_WORK_DIR}/evidence/after/target-source.sha256"; then
+            echo "WARNING: target production source hash changed." \
+              | tee "${UTBOT_WORK_DIR}/evidence/after/production-source-change-warning.txt"
+          else
+            echo "Target production source hash is unchanged." \
+              > "${UTBOT_WORK_DIR}/evidence/after/production-source-integrity.txt"
+          fi
+
+      - name: Collect generated tests and project outputs
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          OUTPUT_DIR="${UTBOT_WORK_DIR}/evidence/generated-files"
+
+          {
+            echo "Candidate generated test and stub files:"
+            find "${GITHUB_WORKSPACE}" \
+              -path "${UTBOT_WORK_DIR}" -prune \
+              -o -type f \
+              \( \
+                -iname "*test*.c" \
+                -o -iname "*test*.cc" \
+                -o -iname "*test*.cpp" \
+                -o -iname "*stub*.c" \
+                -o -iname "*stub*.cc" \
+                -o -iname "*stub*.cpp" \
+              \) \
+              -newer "${UTBOT_WORK_DIR}/evidence/environment.txt" \
+              -print \
+              | sort
+          } > "${UTBOT_WORK_DIR}/evidence/generated-candidates.txt" 2>&1
+
+          while IFS= read -r FILE_PATH; do
+            [ -f "${FILE_PATH}" ] || continue
+            RELATIVE_PATH="${FILE_PATH#${GITHUB_WORKSPACE}/}"
+            DESTINATION="${OUTPUT_DIR}/${RELATIVE_PATH}"
+            mkdir -p "$(dirname "${DESTINATION}")"
+            cp -a "${FILE_PATH}" "${DESTINATION}"
+          done < <(
+            find "${GITHUB_WORKSPACE}" \
+              -path "${UTBOT_WORK_DIR}" -prune \
+              -o -type f \
+              \( \
+                -iname "*test*.c" \
+                -o -iname "*test*.cc" \
+                -o -iname "*test*.cpp" \
+                -o -iname "*stub*.c" \
+                -o -iname "*stub*.cc" \
+                -o -iname "*stub*.cpp" \
+              \) \
+              -newer "${UTBOT_WORK_DIR}/evidence/environment.txt" \
+              -print
+          )
+
+          if [ -f "${GITHUB_WORKSPACE}/build/compile_commands.json" ]; then
+            cp "${GITHUB_WORKSPACE}/build/compile_commands.json" \
+              "${UTBOT_WORK_DIR}/evidence/compile_commands.json"
+          fi
+
+          find "${GITHUB_WORKSPACE}/build" \
+            -maxdepth 4 \
+            -type f \
+            -printf '%P\t%s\n' \
+            2>/dev/null \
+            | sort \
+            > "${UTBOT_WORK_DIR}/evidence/build-file-inventory.txt"
+
+      - name: Collect UnitTestBot logs and state
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+          PID_FILE="${UTBOT_ROOT}/server-install/utbot.pid"
+
+          {
+            echo "Collected at: $(date --iso-8601=seconds)"
+            echo
+            echo "UnitTestBot processes:"
+            ps aux | grep "[u]tbot" || true
+            echo
+            echo "Listening sockets:"
+            ss -ltnp | grep ":${UTBOT_PORT}" || true
+            echo
+            echo "PID file:"
+            if [ -f "${PID_FILE}" ]; then
+              cat "${PID_FILE}"
+            else
+              echo "PID file is absent."
+            fi
+          } > "${UTBOT_WORK_DIR}/evidence/utbot-state.txt" 2>&1
+
+          if [ -d "${UTBOT_ROOT}/logs" ]; then
+            cp -a "${UTBOT_ROOT}/logs" \
+              "${UTBOT_WORK_DIR}/evidence/utbot-logs"
+          fi
+
+          find "${UTBOT_ROOT}" \
+            -maxdepth 3 \
+            -type f \
+            \( -name "*.log" -o -name "*.pid" \) \
+            -printf '%M\t%s\t%p\n' \
+            | sort \
+            > "${UTBOT_WORK_DIR}/evidence/utbot-log-and-pid-inventory.txt"
+
+      - name: Stop UnitTestBot server
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+          PID_FILE="${UTBOT_ROOT}/server-install/utbot.pid"
+          STOP_LOG="${UTBOT_WORK_DIR}/evidence/server-shutdown.txt"
+
+          {
+            if [ ! -s "${PID_FILE}" ]; then
+              echo "No UnitTestBot PID file was found."
+              exit 0
+            fi
+
+            SERVER_PID="$(cat "${PID_FILE}")"
+            echo "Stopping UnitTestBot server PID ${SERVER_PID}."
+
+            if kill -0 "${SERVER_PID}" 2>/dev/null; then
+              kill "${SERVER_PID}"
+
+              for ATTEMPT in $(seq 1 10); do
+                if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+            fi
+
+            if kill -0 "${SERVER_PID}" 2>/dev/null; then
+              echo "Server did not stop after SIGTERM. Sending SIGKILL."
+              kill -9 "${SERVER_PID}" || true
+            fi
+
+            rm -f "${PID_FILE}"
+
+            if nc -z 127.0.0.1 "${UTBOT_PORT}"; then
+              echo "WARNING: port ${UTBOT_PORT} is still listening after shutdown."
+            else
+              echo "Port ${UTBOT_PORT} is closed after shutdown."
+            fi
+          } 2>&1 | tee "${STOP_LOG}"
+
+      - name: Summarize autonomous generation result
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          STATUS_FILE="${UTBOT_WORK_DIR}/evidence/generation-exit-status.txt"
+          SUMMARY_FILE="${UTBOT_WORK_DIR}/evidence/generation-summary.txt"
+
+          {
+            echo "UnitTestBot targeted generation summary"
+            echo
+
+            if [ -f "${STATUS_FILE}" ]; then
+              echo "Generation exit status: $(cat "${STATUS_FILE}")"
+            else
+              echo "Generation exit status: unavailable"
+            fi
+
+            GENERATED_COUNT="$(
+              find "${UTBOT_WORK_DIR}/evidence/generated-files" \
+                -type f 2>/dev/null | wc -l
+            )"
+
+            echo "Collected generated candidate files: ${GENERATED_COUNT}"
+
+            if [ -f "${GITHUB_WORKSPACE}/build/compile_commands.json" ]; then
+              echo "Root build/compile_commands.json: present"
+            else
+              echo "Root build/compile_commands.json: absent"
+            fi
+
+            if [ -f "${UTBOT_WORK_DIR}/evidence/after/production-source-change-warning.txt" ]; then
+              echo "Production source unchanged: no"
+            else
+              echo "Production source unchanged: yes"
+            fi
+
+            echo
+            echo "The workflow preserves the first autonomous UnitTestBot output without correction."
+          } | tee "${SUMMARY_FILE}"
+
+      - name: Upload UnitTestBot targeted generation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittestbot-targeted-generation-evidence
+          path: |
+            utbot-targeted-generation/evidence
+            utbot-targeted-generation/release/*.json
+          if-no-files-found: warn
+          retention-days: 30
