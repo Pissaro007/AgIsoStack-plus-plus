@@ -294,7 +294,8 @@ jobs:
             --print-summary \
             --txt "${EVIDENCE_DIR}/combined-coverage.txt" \
             --json "${EVIDENCE_DIR}/combined-coverage.json" \
-            --xml-pretty "${EVIDENCE_DIR}/combined-coverage.xml" \
+            --xml "${EVIDENCE_DIR}/combined-coverage.xml" \
+            --xml-pretty \
             "${BUILD_DIR}" \
             2>&1 | tee "${EVIDENCE_DIR}/coverage-command-raw.txt"
 
