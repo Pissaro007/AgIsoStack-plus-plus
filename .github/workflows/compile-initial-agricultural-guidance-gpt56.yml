@@ -1,5 +1,7 @@
 name: Compile initial GPT-5.6 agricultural guidance tests
 
+#ci: rerun initial GPT-5.6 guidance build
+
 on:
   workflow_dispatch:
 
