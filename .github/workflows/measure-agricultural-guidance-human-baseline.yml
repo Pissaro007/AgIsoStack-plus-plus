@@ -1,0 +1,413 @@
+name: Measure AgriculturalGuidanceInterface human baseline coverage
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/agricultural-guidance-plus-gpt56
+    paths:
+      - ".github/workflows/measure-agricultural-guidance-human-baseline.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  human-baseline-coverage:
+    name: Measure human-only guidance coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+
+    env:
+      BUILD_DIR: "${{ github.workspace }}/build-agricultural-guidance-human-baseline"
+      EVIDENCE_DIR: "${{ github.workspace }}/agricultural-guidance-human-baseline-evidence"
+      GENERATED_TEST: "test/generated_agricultural_guidance_tests.cpp"
+      TARGET_SOURCE: "isobus/src/isobus_guidance_interface.cpp"
+      GENERATED_CTEST_REGEX: "^AgriculturalGuidanceGeneratedTest\\."
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Create evidence directory
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${EVIDENCE_DIR}"
+
+      - name: Record experiment identity
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Target source: ${TARGET_SOURCE}"
+            echo "Human reference test: test/guidance_tests.cpp"
+            echo "Excluded generated suite regex: ${GENERATED_CTEST_REGEX}"
+            echo "Recorded at: $(date --iso-8601=seconds)"
+            echo
+            cat /etc/os-release
+          } 2>&1 | tee "${EVIDENCE_DIR}/experiment-identity.txt"
+
+      - name: Verify baseline inputs
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            for required_file in \
+              "${GENERATED_TEST}" \
+              "${TARGET_SOURCE}" \
+              "test/guidance_tests.cpp" \
+              "test/CMakeLists.txt"; do
+              if [ ! -f "${required_file}" ]; then
+                echo "ERROR: required file was not found: ${required_file}"
+                exit 1
+              fi
+            done
+
+            if ! grep -Fxq "    generated_agricultural_guidance_tests.cpp" test/CMakeLists.txt; then
+              echo "ERROR: generated test is not integrated in test/CMakeLists.txt."
+              exit 1
+            fi
+
+            if [ -e "${BUILD_DIR}" ]; then
+              echo "ERROR: dedicated build directory already exists."
+              exit 1
+            fi
+
+            echo "The generated test remains compiled but its entire GoogleTest suite will be excluded at execution."
+            echo "All production and human-test inputs are present."
+            echo
+            git status --short --untracked-files=all
+          } 2>&1 | tee "${EVIDENCE_DIR}/input-validation.txt"
+
+      - name: Preserve baseline input hashes
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sha256sum \
+            "${GENERATED_TEST}" \
+            "${TARGET_SOURCE}" \
+            "test/guidance_tests.cpp" \
+            "test/CMakeLists.txt" \
+            > "${EVIDENCE_DIR}/input-sha256-before.txt"
+
+      - name: Install build and coverage dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            gcovr \
+            ninja-build
+
+          {
+            cmake --version
+            c++ --version
+            gcov --version
+            gcovr --version
+            ninja --version
+          } 2>&1 | tee "${EVIDENCE_DIR}/toolchain-versions.txt"
+
+      - name: Configure human baseline coverage build
+        id: configure
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+
+          cmake \
+            -S "${GITHUB_WORKSPACE}" \
+            -B "${BUILD_DIR}" \
+            -G Ninja \
+            -DBUILD_TESTING=ON \
+            -DCMAKE_BUILD_TYPE=Debug \
+            -DCMAKE_C_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_CXX_FLAGS="--coverage -O0 -g" \
+            -DCMAKE_EXE_LINKER_FLAGS="--coverage" \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+            2>&1 | tee "${EVIDENCE_DIR}/cmake-configure-raw.txt"
+
+          STATUS=${PIPESTATUS[0]}
+          echo "${STATUS}" > "${EVIDENCE_DIR}/cmake-configure-exit-status.txt"
+          exit "${STATUS}"
+
+      - name: Build human baseline test executable
+        id: build
+        if: steps.configure.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+
+          cmake --build "${BUILD_DIR}" \
+            --target unit_tests \
+            --parallel 2 \
+            --verbose \
+            2>&1 | tee "${EVIDENCE_DIR}/build-raw.txt"
+
+          STATUS=${PIPESTATUS[0]}
+          echo "${STATUS}" > "${EVIDENCE_DIR}/build-exit-status.txt"
+          exit "${STATUS}"
+
+      - name: Inventory human and generated CTest tests
+        id: inventory
+        if: steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -o pipefail
+
+          ctest --test-dir "${BUILD_DIR}" --show-only=human \
+            2>&1 | tee "${EVIDENCE_DIR}/all-ctest-tests.txt"
+
+          ctest --test-dir "${BUILD_DIR}" \
+            --show-only=human \
+            -R "${GENERATED_CTEST_REGEX}" \
+            2>&1 | tee "${EVIDENCE_DIR}/excluded-generated-tests.txt"
+
+          GENERATED_COUNT="$(grep -c 'AgriculturalGuidanceGeneratedTest\.' "${EVIDENCE_DIR}/excluded-generated-tests.txt" || true)"
+          ALL_COUNT="$(grep -c '^  Test #' "${EVIDENCE_DIR}/all-ctest-tests.txt" || true)"
+          HUMAN_COUNT=$((ALL_COUNT - GENERATED_COUNT))
+
+          {
+            echo "All discovered CTest tests: ${ALL_COUNT}"
+            echo "Excluded generated GPT-5.6 tests: ${GENERATED_COUNT}"
+            echo "Expected human-only tests: ${HUMAN_COUNT}"
+          } | tee "${EVIDENCE_DIR}/test-counts-before-run.txt"
+
+          if [ "${GENERATED_COUNT}" -ne 19 ]; then
+            echo "ERROR: expected exactly 19 generated GPT-5.6 tests to exclude."
+            exit 1
+          fi
+
+          if [ "${HUMAN_COUNT}" -le 0 ]; then
+            echo "ERROR: no human tests remain after exclusion."
+            exit 1
+          fi
+
+      - name: Reset coverage counters before human baseline
+        if: steps.inventory.outcome == 'success'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          find "${BUILD_DIR}" -type f -name '*.gcda' -delete
+
+      - name: Run human-only test baseline
+        id: human_tests
+        if: steps.inventory.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+
+          timeout --signal=TERM --kill-after=30s 15m \
+            ctest \
+            --test-dir "${BUILD_DIR}" \
+            --output-on-failure \
+            --no-tests=error \
+            -E "${GENERATED_CTEST_REGEX}" \
+            -j 2 \
+            2>&1 | tee "${EVIDENCE_DIR}/human-ctest-raw.txt"
+
+          STATUS=${PIPESTATUS[0]}
+          echo "${STATUS}" > "${EVIDENCE_DIR}/human-ctest-exit-status.txt"
+          exit "${STATUS}"
+
+      - name: Verify generated tests were not executed
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          LOG="${EVIDENCE_DIR}/human-ctest-raw.txt"
+          CHECK="${EVIDENCE_DIR}/generated-tests-exclusion-check.txt"
+
+          if [ ! -f "${LOG}" ]; then
+            echo "Human-only CTest log is unavailable." > "${CHECK}"
+            exit 0
+          fi
+
+          if grep -q 'AgriculturalGuidanceGeneratedTest\.' "${LOG}"; then
+            echo "ERROR: at least one generated GPT-5.6 test appears in the human baseline execution log." \
+              | tee "${CHECK}"
+            grep 'AgriculturalGuidanceGeneratedTest\.' "${LOG}" >> "${CHECK}"
+            exit 1
+          fi
+
+          echo "No AgriculturalGuidanceGeneratedTest test was executed in the human baseline." \
+            > "${CHECK}"
+
+      - name: Extract human baseline failures
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            grep -nE \
+              '[0-9]+ - .*\(Failed\)|The following tests FAILED|SEGFAULT|Timeout' \
+              "${EVIDENCE_DIR}/human-ctest-raw.txt" 2>/dev/null \
+              || true
+          } > "${EVIDENCE_DIR}/human-failed-tests.txt"
+
+      - name: Measure targeted human-only coverage
+        id: coverage
+        if: steps.human_tests.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+
+          gcovr \
+            --root "${GITHUB_WORKSPACE}" \
+            --filter "${GITHUB_WORKSPACE}/isobus/src/isobus_guidance_interface.cpp" \
+            --gcov-ignore-errors=no_working_dir_found \
+            --print-summary \
+            --txt "${EVIDENCE_DIR}/human-baseline-coverage.txt" \
+            --json "${EVIDENCE_DIR}/human-baseline-coverage.json" \
+            --xml "${EVIDENCE_DIR}/human-baseline-coverage.xml" \
+            --xml-pretty \
+            "${BUILD_DIR}" \
+            2>&1 | tee "${EVIDENCE_DIR}/coverage-command-raw.txt"
+
+          STATUS=${PIPESTATUS[0]}
+          echo "${STATUS}" > "${EVIDENCE_DIR}/coverage-exit-status.txt"
+          exit "${STATUS}"
+
+      - name: Create exact human baseline coverage summary
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          JSON_FILE="${EVIDENCE_DIR}/human-baseline-coverage.json"
+          SUMMARY_FILE="${EVIDENCE_DIR}/human-baseline-coverage-summary.txt"
+          BRANCH_FILE="${EVIDENCE_DIR}/human-baseline-branch-details.tsv"
+
+          if [ ! -f "${JSON_FILE}" ]; then
+            echo "Human baseline coverage was not measured because the human test suite did not pass or coverage generation failed." \
+              > "${SUMMARY_FILE}"
+            exit 0
+          fi
+
+          python3 - "${JSON_FILE}" "${SUMMARY_FILE}" "${BRANCH_FILE}" <<'PY'
+          import json
+          import sys
+
+          json_path, summary_path, branch_path = sys.argv[1:4]
+          with open(json_path, encoding="utf-8") as source:
+              report = json.load(source)
+
+          files = report.get("files", [])
+          if len(files) != 1:
+              raise SystemExit(f"Expected exactly one filtered source file, found {len(files)}")
+
+          source_file = files[0]
+          lines = source_file.get("lines", [])
+          line_total = len(lines)
+          line_covered = sum(1 for line in lines if line.get("count", 0) > 0)
+
+          branches = []
+          for line in lines:
+              line_number = line.get("line_number")
+              for branch_index, branch in enumerate(line.get("branches", [])):
+                  branches.append((line_number, branch_index, branch))
+
+          branch_total = len(branches)
+          branch_covered = sum(1 for _, _, branch in branches if branch.get("count", 0) > 0)
+
+          line_percent = 100.0 * line_covered / line_total if line_total else 0.0
+          branch_percent = 100.0 * branch_covered / branch_total if branch_total else 0.0
+
+          with open(summary_path, "w", encoding="utf-8") as target:
+              target.write("Target: isobus/src/isobus_guidance_interface.cpp\n")
+              target.write("Configuration: human tests only\n")
+              target.write(f"Lines: {line_covered}/{line_total} ({line_percent:.2f}%)\n")
+              target.write(f"Branches: {branch_covered}/{branch_total} ({branch_percent:.2f}%)\n")
+
+          with open(branch_path, "w", encoding="utf-8") as target:
+              target.write("line\tbranch_index\tblockno\tcount\tcovered\tfallthrough\tthrow\n")
+              for line_number, branch_index, branch in branches:
+                  count = branch.get("count", 0)
+                  target.write(
+                      f"{line_number}\t{branch_index}\t{branch.get('blockno', '')}\t{count}\t"
+                      f"{str(count > 0).lower()}\t{str(branch.get('fallthrough', False)).lower()}\t"
+                      f"{str(branch.get('throw', False)).lower()}\n"
+                  )
+          PY
+
+      - name: Verify repository integrity after baseline
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          sha256sum \
+            "${GENERATED_TEST}" \
+            "${TARGET_SOURCE}" \
+            "test/guidance_tests.cpp" \
+            "test/CMakeLists.txt" \
+            > "${EVIDENCE_DIR}/input-sha256-after.txt"
+
+          if cmp -s \
+            "${EVIDENCE_DIR}/input-sha256-before.txt" \
+            "${EVIDENCE_DIR}/input-sha256-after.txt"; then
+            echo "Generated test, production source, human guidance tests, and CMake integration are unchanged." \
+              > "${EVIDENCE_DIR}/repository-integrity.txt"
+          else
+            echo "WARNING: at least one experimental input changed." \
+              > "${EVIDENCE_DIR}/repository-integrity-warning.txt"
+          fi
+
+          git status --short --untracked-files=all \
+            > "${EVIDENCE_DIR}/git-status-after-baseline.txt"
+
+      - name: Summarize human baseline result
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          value_or_unavailable() {
+            local path="$1"
+            if [ -f "${path}" ]; then
+              cat "${path}"
+            else
+              echo "unavailable"
+            fi
+          }
+
+          {
+            echo "AgriculturalGuidanceInterface human-only baseline summary"
+            echo
+            echo "Commit: ${GITHUB_SHA}"
+            echo "Build exit status: $(value_or_unavailable "${EVIDENCE_DIR}/build-exit-status.txt")"
+            echo "Human-only CTest exit status: $(value_or_unavailable "${EVIDENCE_DIR}/human-ctest-exit-status.txt")"
+            echo "Coverage exit status: $(value_or_unavailable "${EVIDENCE_DIR}/coverage-exit-status.txt")"
+            echo
+            cat "${EVIDENCE_DIR}/test-counts-before-run.txt" 2>/dev/null || true
+            echo
+            cat "${EVIDENCE_DIR}/generated-tests-exclusion-check.txt" 2>/dev/null || true
+            echo
+            cat "${EVIDENCE_DIR}/human-baseline-coverage-summary.txt" 2>/dev/null || true
+            echo
+            echo "The generated GPT-5.6 source was compiled but its 19 tests were excluded from execution."
+          } | tee "${EVIDENCE_DIR}/human-baseline-summary.txt"
+
+      - name: Upload human baseline evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agricultural-guidance-human-baseline-evidence
+          path: agricultural-guidance-human-baseline-evidence
+          if-no-files-found: error
+          retention-days: 30
