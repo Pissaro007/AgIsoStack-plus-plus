@@ -1,0 +1,740 @@
+name: UnitTestBot AgriculturalGuidanceInterface targeted generation diagnostic
+
+on:
+  workflow_dispatch:
+
+  push:
+    branches:
+      - research/agricultural-guidance-plus-unittestbot
+    paths:
+      - ".github/workflows/unittestbot-agricultural-guidance-targeted-generation-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  unit-test-bot-agricultural-guidance-diagnostic:
+    name: Test and diagnose UnitTestBot generation for AgriculturalGuidanceInterface
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+
+    env:
+      UTBOT_VERSION: "2024.3.0"
+      UTBOT_PORT: "2121"
+      UTBOT_WORK_DIR: "${{ github.workspace }}/utbot-agricultural-guidance-diagnostic"
+      TARGET_SOURCE: "${{ github.workspace }}/isobus/src/isobus_guidance_interface.cpp"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Create diagnostic directories
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "${UTBOT_WORK_DIR}/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted/release"
+          mkdir -p "${UTBOT_WORK_DIR}/extracted/distribution"
+          mkdir -p "${UTBOT_WORK_DIR}/evidence/before"
+          mkdir -p "${UTBOT_WORK_DIR}/evidence/after"
+          mkdir -p "${UTBOT_WORK_DIR}/evidence/core-dumps"
+          mkdir -p "${UTBOT_WORK_DIR}/evidence/generated-files"
+
+      - name: Record environment and experiment identity
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo "Repository: ${GITHUB_REPOSITORY}"
+            echo "Branch or tag: ${GITHUB_REF_NAME}"
+            echo "Commit: ${GITHUB_SHA}"
+            echo "UnitTestBot version: ${UTBOT_VERSION}"
+            echo "UnitTestBot port: ${UTBOT_PORT}"
+            echo "Project path: ${GITHUB_WORKSPACE}"
+            echo "Target source: ${TARGET_SOURCE}"
+            echo "Purpose: first autonomous targeted generation attempt for AgriculturalGuidanceInterface with diagnostics"
+            echo
+            cat /etc/os-release
+            echo
+            uname -a
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/environment.txt"
+
+      - name: Verify clean diagnostic starting point
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            if [ ! -f "${TARGET_SOURCE}" ]; then
+              echo "ERROR: target source file was not found: ${TARGET_SOURCE}"
+              exit 1
+            fi
+
+            if [ ! -f "${GITHUB_WORKSPACE}/CMakeLists.txt" ]; then
+              echo "ERROR: root CMakeLists.txt was not found."
+              exit 1
+            fi
+
+            if find "${GITHUB_WORKSPACE}" \
+              -type f \
+              -name "generated_agricultural_guidance_tests.cpp" \
+              -not -path "${UTBOT_WORK_DIR}/*" \
+              -print | grep -q .; then
+              echo "ERROR: generated_agricultural_guidance_tests.cpp is already present."
+              exit 1
+            fi
+
+            if [ -e "${GITHUB_WORKSPACE}/build" ]; then
+              echo "ERROR: a root build path already exists before the diagnostic retry."
+              ls -ld "${GITHUB_WORKSPACE}/build"
+              exit 1
+            fi
+
+            echo "Target source found."
+            echo "Root CMakeLists.txt found."
+            echo "No generated AgriculturalGuidanceInterface test file is present."
+            echo "No root build path is present."
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/start-point-check.txt"
+
+      - name: Record repository state before retry
+        shell: bash
+        run: |
+          set -o pipefail
+
+          git status --short --untracked-files=all \
+            > "${UTBOT_WORK_DIR}/evidence/before/git-status.txt"
+
+          git ls-files -s \
+            > "${UTBOT_WORK_DIR}/evidence/before/git-index.txt"
+
+          sha256sum "${TARGET_SOURCE}" \
+            > "${UTBOT_WORK_DIR}/evidence/before/target-source.sha256"
+
+      - name: Install diagnostic dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ca-certificates \
+            curl \
+            file \
+            gdb \
+            jq \
+            lsb-release \
+            netcat-openbsd \
+            procps \
+            tar \
+            unzip
+
+      - name: Download UnitTestBot release archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          RELEASE_API_URL="https://api.github.com/repos/UnitTestBot/UTBotCpp/releases/tags/${UTBOT_VERSION}"
+          RELEASE_JSON="${UTBOT_WORK_DIR}/release/release-${UTBOT_VERSION}.json"
+          ASSET_NAME="utbot-release-${UTBOT_VERSION}.zip"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            --header "Accept: application/vnd.github+json" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${RELEASE_API_URL}" \
+            --output "${RELEASE_JSON}"
+
+          ASSET_URL="$(
+            jq -r \
+              --arg name "${ASSET_NAME}" \
+              '.assets[] | select(.name == $name) | .browser_download_url' \
+              "${RELEASE_JSON}"
+          )"
+
+          if [ -z "${ASSET_URL}" ] || [ "${ASSET_URL}" = "null" ]; then
+            echo "ERROR: release asset ${ASSET_NAME} was not found."
+            exit 1
+          fi
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 5 \
+            "${ASSET_URL}" \
+            --output "${UTBOT_WORK_DIR}/release/${ASSET_NAME}"
+
+          sha256sum "${UTBOT_WORK_DIR}/release/${ASSET_NAME}" \
+            | tee "${UTBOT_WORK_DIR}/evidence/release-archive.sha256"
+
+      - name: Extract UnitTestBot distribution
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            OUTER_ARCHIVE="${UTBOT_WORK_DIR}/release/utbot-release-${UTBOT_VERSION}.zip"
+            RELEASE_DIR="${UTBOT_WORK_DIR}/extracted/release"
+            DISTRIBUTION_DIR="${UTBOT_WORK_DIR}/extracted/distribution"
+
+            unzip -q "${OUTER_ARCHIVE}" -d "${RELEASE_DIR}"
+
+            INNER_ARCHIVE="${RELEASE_DIR}/utbot_distr.tar.gz"
+            if [ ! -f "${INNER_ARCHIVE}" ]; then
+              echo "ERROR: utbot_distr.tar.gz was not found."
+              exit 1
+            fi
+
+            tar -xzf "${INNER_ARCHIVE}" -C "${DISTRIBUTION_DIR}"
+
+            UTBOT_ROOT="${DISTRIBUTION_DIR}/utbot_distr"
+            if [ ! -d "${UTBOT_ROOT}" ]; then
+              echo "ERROR: extracted utbot_distr directory was not found."
+              exit 1
+            fi
+
+            chmod +x \
+              "${UTBOT_ROOT}/utbot_server_restart.sh" \
+              "${UTBOT_ROOT}/utbot_run_system.sh" \
+              "${UTBOT_ROOT}/utbot_online_cli.sh"
+
+            echo "UnitTestBot distribution extracted to: ${UTBOT_ROOT}"
+            du -sh "${UTBOT_ROOT}"
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/distribution-extraction.txt"
+
+      - name: Record UnitTestBot toolchain identity
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+            UTBOT_EXECUTABLE="${UTBOT_ROOT}/server-install/utbot"
+            echo "UnitTestBot executable:"
+            file "${UTBOT_EXECUTABLE}"
+            sha256sum "${UTBOT_EXECUTABLE}"
+            echo
+
+            echo "Clang version:"
+            "${UTBOT_ROOT}/install/bin/clang" --version
+            echo
+
+            echo "Clang++ version:"
+            "${UTBOT_ROOT}/install/bin/clang++" --version
+            echo
+
+            echo "LLVM symbolizer candidates:"
+            find "${UTBOT_ROOT}" \
+              -type f \
+              \( -name "llvm-symbolizer" -o -name "llvm-symbolizer-*" \) \
+              -printf '%M\t%s\t%p\n' \
+              | sort
+            echo
+
+            SYMBOLIZER="$(
+              find "${UTBOT_ROOT}" \
+                -type f \
+                \( -name "llvm-symbolizer" -o -name "llvm-symbolizer-*" \) \
+                -executable \
+                -print \
+                -quit
+            )"
+
+            if [ -n "${SYMBOLIZER}" ]; then
+              echo "Selected LLVM symbolizer: ${SYMBOLIZER}"
+              "${SYMBOLIZER}" --version || true
+            else
+              echo "WARNING: no executable LLVM symbolizer is bundled in this UnitTestBot distribution."
+              echo "The diagnostic retry will continue; the raw stack and any GDB core backtrace will still be preserved."
+            fi
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/toolchain-identity.txt"
+
+      - name: Verify UnitTestBot runtime libraries
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+            export LD_LIBRARY_PATH="${UTBOT_ROOT}/install/lib:${UTBOT_ROOT}/debs-install/lib/x86_64-linux-gnu:${UTBOT_ROOT}/debs-install/usr/lib/x86_64-linux-gnu:${UTBOT_ROOT}/debs-install/usr/local/lib:${UTBOT_ROOT}/debs-install/lib:${UTBOT_ROOT}/debs-install/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+
+            ldd "${UTBOT_ROOT}/server-install/utbot"
+
+            if ldd "${UTBOT_ROOT}/server-install/utbot" | grep -q "not found"; then
+              echo "ERROR: unresolved UnitTestBot server libraries remain."
+              exit 1
+            fi
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/runtime-library-check.txt"
+
+      - name: Configure core dump diagnostics
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo "Initial core size limit:"
+            ulimit -c
+            echo
+
+            echo "Kernel core pattern:"
+            cat /proc/sys/kernel/core_pattern
+            echo
+
+            echo "Attempting to configure a writable core dump pattern."
+            if echo "${UTBOT_WORK_DIR}/evidence/core-dumps/core.%e.%p.%t" \
+              | sudo tee /proc/sys/kernel/core_pattern >/dev/null; then
+              echo "Core pattern updated."
+            else
+              echo "WARNING: GitHub Actions did not allow updating kernel.core_pattern."
+            fi
+
+            echo
+            echo "Effective core pattern:"
+            cat /proc/sys/kernel/core_pattern
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/core-dump-configuration.txt"
+
+      - name: Start UnitTestBot server
+        shell: bash
+        run: |
+          set -o pipefail
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+
+          {
+            if nc -z 127.0.0.1 "${UTBOT_PORT}"; then
+              echo "ERROR: port ${UTBOT_PORT} is already listening."
+              exit 1
+            fi
+
+            cd "${UTBOT_ROOT}"
+            timeout 20s ./utbot_server_restart.sh "${UTBOT_PORT}"
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/server-startup.txt"
+
+      - name: Verify UnitTestBot server readiness
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+            PID_FILE="${UTBOT_ROOT}/server-install/utbot.pid"
+            PROCESS_READY=0
+            PORT_READY=0
+
+            for ATTEMPT in $(seq 1 15); do
+              if [ -s "${PID_FILE}" ]; then
+                SERVER_PID="$(cat "${PID_FILE}")"
+                if kill -0 "${SERVER_PID}" 2>/dev/null; then
+                  PROCESS_READY=1
+                fi
+              fi
+
+              if nc -z 127.0.0.1 "${UTBOT_PORT}"; then
+                PORT_READY=1
+              fi
+
+              if [ "${PROCESS_READY}" -eq 1 ] && [ "${PORT_READY}" -eq 1 ]; then
+                break
+              fi
+
+              sleep 2
+            done
+
+            echo "Process ready: ${PROCESS_READY}"
+            echo "Port ready: ${PORT_READY}"
+            ps aux | grep "[u]tbot.*server" || true
+            ss -ltnp | grep ":${UTBOT_PORT}" || true
+
+            if [ "${PROCESS_READY}" -ne 1 ] || [ "${PORT_READY}" -ne 1 ]; then
+              echo "ERROR: UnitTestBot server readiness validation failed."
+              exit 1
+            fi
+          } 2>&1 | tee "${UTBOT_WORK_DIR}/evidence/server-readiness.txt"
+
+      - name: Run targeted AgriculturalGuidanceInterface generation with diagnostics
+        id: diagnostic_generation
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -o pipefail
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+          RAW_LOG="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-raw-output.txt"
+          PIPE_STATUS_FILE="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-pipeline-status.txt"
+          RAW_STATUS_FILE="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-raw-exit-status.txt"
+          FINAL_STATUS_FILE="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-step-exit-status.txt"
+
+          SYMBOLIZER="$(
+            find "${UTBOT_ROOT}" \
+              -type f \
+              \( -name "llvm-symbolizer" -o -name "llvm-symbolizer-*" \) \
+              -executable \
+              -print \
+              -quit
+          )"
+
+          if [ -n "${SYMBOLIZER}" ]; then
+            export LLVM_SYMBOLIZER_PATH="${SYMBOLIZER}"
+            echo "Using LLVM symbolizer: ${LLVM_SYMBOLIZER_PATH}"
+          else
+            unset LLVM_SYMBOLIZER_PATH
+            echo "No bundled LLVM symbolizer is available; continuing without LLVM stack symbolization."
+          fi
+
+          export PATH="${UTBOT_ROOT}/install/bin:${PATH}"
+          ulimit -c unlimited
+
+          set +e
+          cd "${UTBOT_ROOT}"
+
+          timeout --signal=TERM --kill-after=30s 20m \
+            ./utbot_online_cli.sh \
+            generate \
+            "${GITHUB_WORKSPACE}" \
+            "${TARGET_SOURCE}" \
+            2>&1 | tee "${RAW_LOG}"
+
+          PIPE_STATUSES=("${PIPESTATUS[@]}")
+          GENERATION_STATUS="${PIPE_STATUSES[0]}"
+          TEE_STATUS="${PIPE_STATUSES[1]}"
+
+          printf 'generation=%s\ntee=%s\n' \
+            "${GENERATION_STATUS}" \
+            "${TEE_STATUS}" \
+            | tee "${PIPE_STATUS_FILE}"
+
+          echo "${GENERATION_STATUS}" | tee "${RAW_STATUS_FILE}"
+
+          FINAL_STATUS="${GENERATION_STATUS}"
+          if [ "${FINAL_STATUS}" -eq 0 ] && [ "${TEE_STATUS}" -ne 0 ]; then
+            FINAL_STATUS="${TEE_STATUS}"
+          fi
+
+          echo "${FINAL_STATUS}" | tee "${FINAL_STATUS_FILE}"
+
+          if [ "${GENERATION_STATUS}" -eq 124 ] || [ "${GENERATION_STATUS}" -eq 137 ]; then
+            echo "UnitTestBot diagnostic generation reached the configured timeout." \
+              | tee -a "${RAW_LOG}"
+          fi
+
+          exit "${FINAL_STATUS}"
+
+      - name: Extract focused crash diagnostics
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          RAW_LOG="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-raw-output.txt"
+          FOCUSED_LOG="${UTBOT_WORK_DIR}/evidence/focused-crash-diagnostics.txt"
+
+          {
+            echo "===== Last 250 lines before termination ====="
+            tail -n 250 "${RAW_LOG}" 2>/dev/null || true
+            echo
+
+            echo "===== Segmentation fault and status lines ====="
+            grep -nEi \
+              'segmentation fault|core dumped|signal 11|error 139|exit status|stack dump' \
+              "${RAW_LOG}" \
+              || true
+            echo
+
+            echo "===== Type and stub synchronization frames ====="
+            grep -nE \
+              'getFunctionPointerDeclaration|resolveStructEx|TypeDeclsMatchCallback|synchronizeStubs|ParamsHandler|Synchronizer' \
+              "${RAW_LOG}" \
+              || true
+            echo
+
+            echo "===== Last 100 UnitTestBot ERR or WARN lines ====="
+            grep -E 'ERR\||WARN\|' "${RAW_LOG}" 2>/dev/null \
+              | tail -n 100 \
+              || true
+          } > "${FOCUSED_LOG}" 2>&1
+
+      - name: Collect kernel crash information
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          {
+            echo "dmesg tail after generation attempt:"
+            dmesg | tail -n 100
+            STATUS=$?
+
+            if [ "${STATUS}" -ne 0 ]; then
+              echo "WARNING: dmesg access is unavailable on this GitHub-hosted runner."
+            fi
+          } > "${UTBOT_WORK_DIR}/evidence/kernel-crash-information.txt" 2>&1
+
+      - name: Collect and inspect core dumps
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+          UTBOT_EXECUTABLE="${UTBOT_ROOT}/server-install/utbot"
+          CORE_DIR="${UTBOT_WORK_DIR}/evidence/core-dumps"
+          INVENTORY="${UTBOT_WORK_DIR}/evidence/core-dump-inventory.txt"
+          BACKTRACE="${UTBOT_WORK_DIR}/evidence/core-dump-gdb-backtrace.txt"
+
+          find "${GITHUB_WORKSPACE}" /tmp "${UTBOT_ROOT}" \
+            -xdev \
+            -type f \
+            \( -name 'core' -o -name 'core.*' -o -name '*.core' \) \
+            -print 2>/dev/null \
+            | sort -u \
+            > "${UTBOT_WORK_DIR}/evidence/core-dump-paths.txt"
+
+          while IFS= read -r CORE_FILE; do
+            [ -f "${CORE_FILE}" ] || continue
+            DESTINATION="${CORE_DIR}/$(basename "${CORE_FILE}")"
+            if [ "${CORE_FILE}" != "${DESTINATION}" ]; then
+              cp -a "${CORE_FILE}" "${DESTINATION}" || true
+            fi
+          done < "${UTBOT_WORK_DIR}/evidence/core-dump-paths.txt"
+
+          find "${CORE_DIR}" \
+            -type f \
+            -printf '%M\t%s\t%p\n' \
+            | sort \
+            > "${INVENTORY}"
+
+          : > "${BACKTRACE}"
+          for CORE_FILE in "${CORE_DIR}"/*; do
+            [ -f "${CORE_FILE}" ] || continue
+            {
+              echo "===== ${CORE_FILE} ====="
+              file "${CORE_FILE}"
+              gdb \
+                --batch \
+                --quiet \
+                -ex 'set pagination off' \
+                -ex 'thread apply all bt full' \
+                "${UTBOT_EXECUTABLE}" \
+                "${CORE_FILE}"
+              echo
+            } >> "${BACKTRACE}" 2>&1
+          done
+
+          if [ ! -s "${INVENTORY}" ]; then
+            echo "No accessible core dump was collected." > "${INVENTORY}"
+          fi
+
+          if [ ! -s "${BACKTRACE}" ]; then
+            echo "No GDB backtrace was produced because no accessible core dump was collected." \
+              > "${BACKTRACE}"
+          fi
+
+      - name: Record repository state after diagnostic retry
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          git diff --name-status \
+            > "${UTBOT_WORK_DIR}/evidence/after/tracked-name-status.txt"
+
+          git diff --binary \
+            > "${UTBOT_WORK_DIR}/evidence/after/tracked-changes.patch"
+
+          sha256sum "${TARGET_SOURCE}" \
+            > "${UTBOT_WORK_DIR}/evidence/after/target-source.sha256"
+
+          if cmp -s \
+            "${UTBOT_WORK_DIR}/evidence/before/target-source.sha256" \
+            "${UTBOT_WORK_DIR}/evidence/after/target-source.sha256"; then
+            echo "Target production source hash is unchanged." \
+              > "${UTBOT_WORK_DIR}/evidence/after/production-source-integrity.txt"
+          else
+            echo "WARNING: target production source hash changed." \
+              > "${UTBOT_WORK_DIR}/evidence/after/production-source-change-warning.txt"
+          fi
+
+          find "${GITHUB_WORKSPACE}" \
+            -path "${UTBOT_WORK_DIR}" -prune \
+            -o -type f \
+            \( \
+              -iname "*test*.c" \
+              -o -iname "*test*.cc" \
+              -o -iname "*test*.cpp" \
+              -o -iname "*stub*.c" \
+              -o -iname "*stub*.cc" \
+              -o -iname "*stub*.cpp" \
+            \) \
+            -newer "${UTBOT_WORK_DIR}/evidence/environment.txt" \
+            -print \
+            | sort \
+            > "${UTBOT_WORK_DIR}/evidence/after/generated-candidates.txt"
+
+          while IFS= read -r FILE_PATH; do
+            [ -f "${FILE_PATH}" ] || continue
+            RELATIVE_PATH="${FILE_PATH#${GITHUB_WORKSPACE}/}"
+            DESTINATION="${UTBOT_WORK_DIR}/evidence/generated-files/${RELATIVE_PATH}"
+            mkdir -p "$(dirname "${DESTINATION}")"
+            cp -a "${FILE_PATH}" "${DESTINATION}"
+          done < "${UTBOT_WORK_DIR}/evidence/after/generated-candidates.txt"
+
+          if [ -f "${GITHUB_WORKSPACE}/build/compile_commands.json" ]; then
+            cp "${GITHUB_WORKSPACE}/build/compile_commands.json" \
+              "${UTBOT_WORK_DIR}/evidence/compile_commands.json"
+          fi
+
+      - name: Collect UnitTestBot logs and running state
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+          PID_FILE="${UTBOT_ROOT}/server-install/utbot.pid"
+
+          {
+            echo "Collected at: $(date --iso-8601=seconds)"
+            echo
+            echo "UnitTestBot processes:"
+            ps aux | grep "[u]tbot" || true
+            echo
+            echo "Listening sockets:"
+            ss -ltnp | grep ":${UTBOT_PORT}" || true
+            echo
+            echo "PID file:"
+            if [ -f "${PID_FILE}" ]; then
+              cat "${PID_FILE}"
+            else
+              echo "PID file is absent."
+            fi
+          } > "${UTBOT_WORK_DIR}/evidence/utbot-state.txt" 2>&1
+
+          if [ -d "${UTBOT_ROOT}/logs" ]; then
+            cp -a "${UTBOT_ROOT}/logs" \
+              "${UTBOT_WORK_DIR}/evidence/utbot-logs"
+          fi
+
+      - name: Stop UnitTestBot server
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          UTBOT_ROOT="${UTBOT_WORK_DIR}/extracted/distribution/utbot_distr"
+          PID_FILE="${UTBOT_ROOT}/server-install/utbot.pid"
+          STOP_LOG="${UTBOT_WORK_DIR}/evidence/server-shutdown.txt"
+
+          {
+            if [ ! -s "${PID_FILE}" ]; then
+              echo "No UnitTestBot PID file was found."
+              exit 0
+            fi
+
+            SERVER_PID="$(cat "${PID_FILE}")"
+            echo "Stopping UnitTestBot server PID ${SERVER_PID}."
+
+            if kill -0 "${SERVER_PID}" 2>/dev/null; then
+              kill "${SERVER_PID}"
+
+              for ATTEMPT in $(seq 1 10); do
+                if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+                  break
+                fi
+                sleep 1
+              done
+            fi
+
+            if kill -0 "${SERVER_PID}" 2>/dev/null; then
+              echo "Server did not stop after SIGTERM. Sending SIGKILL."
+              kill -9 "${SERVER_PID}" || true
+            fi
+
+            rm -f "${PID_FILE}"
+
+            if nc -z 127.0.0.1 "${UTBOT_PORT}"; then
+              echo "WARNING: port ${UTBOT_PORT} is still listening after shutdown."
+            else
+              echo "Port ${UTBOT_PORT} is closed after shutdown."
+            fi
+          } 2>&1 | tee "${STOP_LOG}"
+
+      - name: Summarize diagnostic repetition
+        if: always()
+        shell: bash
+        run: |
+          set +e
+
+          RAW_LOG="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-raw-output.txt"
+          RAW_STATUS_FILE="${UTBOT_WORK_DIR}/evidence/diagnostic-generation-raw-exit-status.txt"
+          SUMMARY_FILE="${UTBOT_WORK_DIR}/evidence/diagnostic-summary.txt"
+
+          {
+            echo "UnitTestBot AgriculturalGuidanceInterface diagnostic summary"
+            echo
+
+            if [ -f "${RAW_STATUS_FILE}" ]; then
+              echo "Generation command status reported by the wrapper: $(cat "${RAW_STATUS_FILE}")"
+            else
+              echo "Generation command status reported by the wrapper: unavailable"
+            fi
+
+            if grep -q "Segmentation fault" "${RAW_LOG}" 2>/dev/null; then
+              echo "Segmentation fault reproduced: yes"
+            else
+              echo "Segmentation fault reproduced: no"
+            fi
+
+            if grep -q "Error 139" "${RAW_LOG}" 2>/dev/null; then
+              echo "Inner UnitTestBot status 139 observed: yes"
+            else
+              echo "Inner UnitTestBot status 139 observed: no"
+            fi
+
+            if grep -q "getFunctionPointerDeclaration" "${RAW_LOG}" 2>/dev/null; then
+              echo "getFunctionPointerDeclaration frame observed: yes"
+            else
+              echo "getFunctionPointerDeclaration frame observed: no"
+            fi
+
+            if grep -q "resolveStructEx" "${RAW_LOG}" 2>/dev/null; then
+              echo "resolveStructEx frame observed: yes"
+            else
+              echo "resolveStructEx frame observed: no"
+            fi
+
+            if grep -q "synchronizeStubs" "${RAW_LOG}" 2>/dev/null; then
+              echo "synchronizeStubs frame observed: yes"
+            else
+              echo "synchronizeStubs frame observed: no"
+            fi
+
+            CORE_COUNT="$(find "${UTBOT_WORK_DIR}/evidence/core-dumps" -type f 2>/dev/null | wc -l)"
+            echo "Accessible core dumps collected: ${CORE_COUNT}"
+
+            GENERATED_COUNT="$(find "${UTBOT_WORK_DIR}/evidence/generated-files" -type f 2>/dev/null | wc -l)"
+            echo "Generated candidate files collected: ${GENERATED_COUNT}"
+
+            if [ -f "${GITHUB_WORKSPACE}/build/compile_commands.json" ]; then
+              echo "Root build/compile_commands.json: present"
+            else
+              echo "Root build/compile_commands.json: absent"
+            fi
+
+            if [ -f "${UTBOT_WORK_DIR}/evidence/after/production-source-change-warning.txt" ]; then
+              echo "Production source unchanged: no"
+            else
+              echo "Production source unchanged: yes"
+            fi
+
+            echo
+            echo "This workflow performs one autonomous generation attempt without correcting UnitTestBot or the project."
+          } | tee "${SUMMARY_FILE}"
+
+      - name: Upload UnitTestBot diagnostic retry evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unittestbot-agricultural-guidance-targeted-generation-diagnostic-evidence
+          path: |
+            utbot-agricultural-guidance-diagnostic/evidence
+            utbot-agricultural-guidance-diagnostic/release/*.json
+          if-no-files-found: warn
+          retention-days: 30
